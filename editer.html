@@ -1,0 +1,115 @@
+    
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>DuckDB</title>
+    </head>
+    <link rel="stylesheet" href="http://codemirror.net/lib/codemirror.css">
+    <link rel="stylesheet" href="http://codemirror.net/addon/hint/show-hint.css">
+    
+    <script src="http://codemirror.net/lib/codemirror.js"></script>
+    <script src="http://codemirror.net/addon/edit/matchbrackets.js"></script>
+    <script src="http://codemirror.net/addon/edit/continuecomment.js"></script>
+    <script src="http://codemirror.net/mode/sql/sql.js"></script>
+    <script src="http://codemirror.net/addon/hint/show-hint.js"></script>
+    <script src="http://codemirror.net/addon/hint/sql-hint.js"></script>
+ 
+    <body>
+        <div>
+            <h2>SQL Editer</h2>
+            <textarea rows="3" cols="40" name="codesnippet_editable" id="codesnippet_editable">
+                -- SQL Mode for CodeMirror
+                SELECT 1 AS 'Result' 
+                    UNION SELECT 2
+                    UNION SELECT 3
+            </textarea>
+        </div>
+    </body>
+
+    <script>
+        libraryVersion = "0.0.41-dev180.0";
+        packageName = "@duckdb/duckdb-wasm";
+        distURL = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@0.0.41-dev180.0/dist/";
+    
+        DUCKDB_BUNDLES = ({
+            asyncDefault: {
+                mainModule: new URL('duckdb.wasm', distURL).toString(),
+                mainWorker: new URL('duckdb-browser-async.worker.js', distURL).toString(),
+            },
+            asyncNext: {
+                mainModule: new URL(`duckdb-next.wasm`, distURL).toString(),
+                mainWorker: new URL('duckdb-browser-async-next.worker.js', distURL).toString(),
+            },
+            asyncNextCOI: {
+                mainModule: new URL('duckdb-next-coi.wasm', distURL).toString(),
+                mainWorker: new URL('duckdb-browser-async-next-coi.worker.js', distURL).toString(),
+                pthreadWorker: new URL('duckdb-browser-async-next-coi.pthread.worker.js', distURL).toString(),
+            },
+        })
+    
+        async function makeDB() {
+            const logger = new duckdb.ConsoleLogger();
+            const worker = new Worker(workerURL);
+            const db = new duckdb.AsyncDuckDB(logger, worker);
+            await db.instantiate(wasmURL, pThreadURL);
+            return db
+        }
+    
+        async function load() {
+            duckdb = await import(`https://cdn.skypack.dev/${packageName}@${libraryVersion}`);
+            bundle = await duckdb.selectBundle(DUCKDB_BUNDLES)
+    
+            // download worker script
+            let workerReq = await fetch(bundle.mainWorker);
+            let workerScript = await workerReq.text();
+            let workerScriptBlob = new Blob([workerScript], { type: 'application/javascript' });
+            workerURL = URL.createObjectURL(workerScriptBlob);
+    
+            // download WASM
+            let wasmReq = await fetch(bundle.mainModule);
+            wasmURL = URL.createObjectURL(await wasmReq.blob());
+    
+            // download Wasm
+            if (!bundle.pthreadWorker) {
+                pThreadURL = undefined;
+            } else {
+                let pthreadReq = await fetch(bundle.pthreadWorker);
+                pThreadURL = URL.createObjectURL(await pthreadReq.blob());
+            }
+    
+            const logger = new duckdb.ConsoleLogger();
+            const worker = new Worker(workerURL);
+            db = new duckdb.AsyncDuckDB(logger, worker);
+            await db.instantiate(wasmURL, pThreadURL);
+            console.log(db.getVersion())
+    
+            test(db);
+        }
+    
+        async function test(db) {
+            const conn = await db.connect();
+            const result = await conn.runQuery(`SELECT 1 AS 'Result' UNION SELECT 11 UNION SELECT 22 UNION SELECT 111 UNION SELECT 222`);
+            await conn.close();
+            console.log(result);
+        }
+    
+        window.onload = function () { 
+            var editableCodeMirror = CodeMirror.fromTextArea(document.getElementById('codesnippet_editable'), {
+                mode: "text/x-mysql",
+                lineNumbers: true,
+                indentWithTabs: true,
+                smartIndent: true,
+                lineNumbers: true,
+                matchBrackets : true,
+                autofocus: true,
+                extraKeys: {"Ctrl-Space": "autocomplete"},
+                hintOptions: {tables: {
+                    users: {name: null, score: null, birthDate: null},
+                    countries: {name: null, population: null, size: null}
+                }}
+            });
+            load();
+        };
+
+    </script>
+</html>
