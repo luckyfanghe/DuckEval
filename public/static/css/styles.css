@@ -1,0 +1,30 @@
+.code-container {
+	position: relative;
+	margin-bottom: 1.5rem;
+	overflow: hidden;
+	border-radius: 3px;
+	box-shadow: 3px 3px 6px rgba(0, 0, 0, .3);
+}
+
+.btn {
+    display: inline-block;
+    margin-bottom: 0;
+    font-weight: 400;
+    line-height: 1;
+    text-align: center;
+    white-space: nowrap;
+    vertical-align: middle;
+    -ms-touch-action: manipulation;
+    touch-action: manipulation;
+    cursor: pointer;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    background-image: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    margin-right: 6px;
+	background: transparent;
+	padding-left: 12px;
+}

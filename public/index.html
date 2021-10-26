@@ -1,7 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DuckDB</title>
+    <link rel="stylesheet" href="http://codemirror.net/lib/codemirror.css">
+    <link rel="stylesheet" href="http://codemirror.net/addon/hint/show-hint.css">
+    <link rel="stylesheet" href="./static/css/sortable-theme-bootstrap.css" />
+    <link rel="stylesheet" href="./static/css/styles.css" />
+    
+    <script src="http://codemirror.net/lib/codemirror.js"></script>
+    <script src="http://codemirror.net/addon/edit/matchbrackets.js"></script>
+    <script src="http://codemirror.net/mode/sql/sql.js"></script>
+    <script src="http://codemirror.net/addon/hint/show-hint.js"></script>
+    <script src="http://codemirror.net/addon/hint/sql-hint.js"></script>
+    <script src="http://pure.github.io/pure/libs/pure.js"></script>
+    <script src="./static/js/sortable.js"></script>
+</head>
+
+<body>
+<div>
+    <h2>SQL Editer</h2>
+    <button type="button" class="btn" style="float: left;" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
+    <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
+    SELECT 1 AS 'Result' 
+        UNION SELECT 2
+        UNION SELECT 3
+    </textarea>
+    <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
+        <thead id="thead">
+        </thead>
+        <tbody id="tbody">
+        </tbody>
+    </table>
+</div>
+
 <script>
-    libraryVersion = "0.0.41-dev180.0";
-    packageName = "@duckdb/duckdb-wasm";
-    distURL = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@0.0.41-dev180.0/dist/";
+    const libraryVersion = "0.0.41-dev180.0";
+    const packageName = "@duckdb/duckdb-wasm";
+    const distURL = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@0.0.41-dev180.0/dist/";
+    var db, sql_editer;
 
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -24,12 +60,12 @@
         const worker = new Worker(workerURL);
         const db = new duckdb.AsyncDuckDB(logger, worker);
         await db.instantiate(wasmURL, pThreadURL);
-        return db
+        return db;
     }
 
     async function load() {
         duckdb = await import(`https://cdn.skypack.dev/${packageName}@${libraryVersion}`);
-        bundle = await duckdb.selectBundle(DUCKDB_BUNDLES)
+        bundle = await duckdb.selectBundle(DUCKDB_BUNDLES);
 
         // download worker script
         let workerReq = await fetch(bundle.mainWorker);
@@ -53,9 +89,7 @@
         const worker = new Worker(workerURL);
         db = new duckdb.AsyncDuckDB(logger, worker);
         await db.instantiate(wasmURL, pThreadURL);
-        console.log(db.getVersion())
-
-        test(db);
+        console.log(db.getVersion());
     }
 
     async function test(db) {
@@ -65,5 +99,73 @@
         console.log(result);
     }
 
-    load();
+    window.onload = function () { 
+        sql_editer = CodeMirror.fromTextArea(document.getElementById('textarea_sql_editer'), {
+            mode: "text/x-mysql",
+            lineNumbers: true,
+            indentWithTabs: true,
+            smartIndent: true,
+            lineNumbers: true,
+            matchBrackets : true,
+            autofocus: true,
+            extraKeys: {"Ctrl-Space": "autocomplete"},
+            hintOptions: {tables: {
+                users: {name: null, score: null, birthDate: null},
+                countries: {name: null, population: null, size: null}
+            }}
+        });
+        load();
+    };
+
+    function onClickPlay() {
+        query = sql_editer.getValue()
+        if (query) {
+            run_query(query);
+        }
+    }
+
+    async function run_query(query) {
+        const conn = await db.connect();
+        // const result = await conn.runQuery(query);
+        const result = await conn.sendQuery(query);
+        const batch = (await result.next()).value;
+        await conn.close();
+        load_data(batch)
+    }
+
+    function load_data(rows) {
+        var thead = document.getElementById("thead");
+        var tbody = document.getElementById("tbody");
+
+        while (thead.hasChildNodes()) {
+            thead.removeChild(thead.lastChild);
+        }
+        while (tbody.hasChildNodes()) {
+            tbody.removeChild(tbody.lastChild);
+        }
+
+        var header_row = document.createElement("tr");
+        var field_names = []
+        for (let field of rows.schema.fields) {
+            addCell(header_row, "th", `${field.name}`);
+            field_names.push(field.name)
+        }
+        thead.appendChild(header_row);
+
+        for (let row of rows) {
+            var tr = document.createElement("tr");
+            for (let f of field_names) {
+                addCell(tr, "td", row[f]);
+            }
+            tbody.appendChild(tr);
+        }
+
+        Sortable.initTable(document.querySelector('#sortable_table'))
+    }
+    function addCell(tr, type, value) {
+        var td = document.createElement(type)
+        td.textContent = value;
+        tr.appendChild(td);
+    }
 </script>
+</html>
