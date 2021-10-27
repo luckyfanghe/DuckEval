@@ -21,6 +21,7 @@
     <h2>SQL Editer</h2>
     <button type="button" class="btn" style="float: left;" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
     <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
+    -- Use '--' for comments
     SELECT 1 AS 'Result' 
         UNION SELECT 2
         UNION SELECT 3
@@ -117,7 +118,12 @@
             lineNumbers: true,
             matchBrackets : true,
             autofocus: true,
-            extraKeys: {"Ctrl-Space": "autocomplete"},
+            extraKeys: {
+                "Ctrl-Space": "autocomplete",
+                "Cmd-Enter":  function(cm) {
+                    onClickPlay()
+                }
+            },
             hintOptions: {tables: {
                 users: {name: null, score: null, birthDate: null},
                 countries: {name: null, population: null, size: null}
@@ -125,6 +131,7 @@
         });
         load();
     };
+
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
