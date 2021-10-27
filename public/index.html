@@ -25,6 +25,7 @@
         UNION SELECT 2
         UNION SELECT 3
     </textarea>
+    <div id="query_elapsed"></div>
     <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
         <thead id="thead">
         </thead>
@@ -125,15 +126,22 @@
     }
 
     async function run_query(query) {
-        const conn = await db.connect();
-        // const result = await conn.runQuery(query);
-        const result = await conn.sendQuery(query);
-        const batch = (await result.next()).value;
-        await conn.close();
-        load_data(batch)
+        try {
+            const conn = await db.connect();
+            const elapsed = Date.now();
+            // const result = await conn.runQuery(query);
+            const result = await conn.sendQuery(query);
+            const batch = (await result.next()).value;
+            await conn.close();
+            load_data(batch, Date.now() - elapsed)
+        } 
+        catch (e) {
+            var div = document.getElementById('query_elapsed');
+            div.innerHTML = `<span class="error_query">${e.message}</span>`;
+        }
     }
 
-    function load_data(rows) {
+    function load_data(rows, elapsed) {
         var thead = document.getElementById("thead");
         var tbody = document.getElementById("tbody");
 
@@ -161,6 +169,8 @@
         }
 
         Sortable.initTable(document.querySelector('#sortable_table'))
+        var div = document.getElementById('query_elapsed');
+        div.innerHTML = `<span class="elapsed">Elapsed</span><span>${elapsed} ms</span>`;
     }
     function addCell(tr, type, value) {
         var td = document.createElement(type)

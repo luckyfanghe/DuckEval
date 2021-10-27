@@ -28,3 +28,13 @@
 	background: transparent;
 	padding-left: 12px;
 }
+
+.elapsed {
+    font-weight: bold;
+    margin: 10px;
+}
+
+.error_query {
+    color: #cd2525;
+    margin: 10px;
+}
