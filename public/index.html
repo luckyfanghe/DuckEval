@@ -25,6 +25,14 @@
         UNION SELECT 2
         UNION SELECT 3
     </textarea>
+    <div class="file_browser_container">
+        <!-- <label for="file-input">
+            <img src="/static/images/upload.svg" style="width: 30px;"/>
+        </label>
+        <input id="file-input" type="file" /> -->
+        <label for="qfile">Select files:</label>
+        <input type="file" id="qfile" name="qfile" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
+    </div>
     <div id="query_elapsed"></div>
     <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
         <thead id="thead">
@@ -117,6 +125,12 @@
         });
         load();
     };
+    const qfile_input = document.getElementById("qfile");
+    qfile_input.addEventListener("change", registerFile, false);
+    async function registerFile() {
+        console.log(this.files[0])
+        await db.registerFileHandle(this.files[0].name, this.files[0])
+    }
 
     function onClickPlay() {
         query = sql_editer.getValue()

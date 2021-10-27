@@ -29,6 +29,15 @@
 	padding-left: 12px;
 }
 
+.file_browser_container {
+    margin: 20px 10px;
+}
+
+/* 
+.file_browser_container input {
+    display: none;
+} */
+
 .elapsed {
     font-weight: bold;
     margin: 10px;
