@@ -13,6 +13,7 @@
     <script src="http://codemirror.net/addon/hint/show-hint.js"></script>
     <script src="http://codemirror.net/addon/hint/sql-hint.js"></script>
     <script src="http://pure.github.io/pure/libs/pure.js"></script>
+    <script src="https://unpkg.com/canvas-datagrid"></script>
     <script src="./static/js/sortable.js"></script>
 </head>
 
@@ -35,12 +36,13 @@
         <input type="file" id="qfile" name="qfile" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
     </div>
     <div id="query_elapsed"></div>
-    <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
+    <div id="grid"></div>
+    <!-- <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
         <thead id="thead">
         </thead>
         <tbody id="tbody">
         </tbody>
-    </table>
+    </table> -->
 </div>
 
 <script>
@@ -154,7 +156,12 @@
             const result = await conn.sendQuery(query);
             const batch = (await result.next()).value;
             await conn.close();
-            load_data(batch, Date.now() - elapsed)
+            
+            var div = document.getElementById('query_elapsed');
+            div.innerHTML = `<span class="elapsed">Elapsed</span><span>${Date.now() - elapsed} ms</span>`;
+            
+            load_data_with_canvasgrid(batch);
+            // load_data_with_sortabletable(batch, Date.now() - elapsed);
         } 
         catch (e) {
             var div = document.getElementById('query_elapsed');
@@ -162,7 +169,39 @@
         }
     }
 
-    function load_data(rows, elapsed) {
+    function load_data_with_canvasgrid(rows) {
+        var parentNode = document.getElementById('grid');
+        parentNode.innerHTML = ''
+        
+        var field_names = []
+        for (let field of rows.schema.fields) {
+            field_names.push(field.name)
+        }
+
+        var data = []
+        for (let row of rows) {
+            let r = {}
+            for (let f of field_names) {
+                r[f] = row[f];
+            }
+            data.push(r)
+        }
+
+        var grid = canvasDatagrid({
+            parentNode: parentNode,
+            style: {
+            	overflowX: 'hidden',
+                overflowY: 'hidden',
+            }
+        });
+
+        grid.style.cellWidth = 150;
+        grid.style.height = '500px';
+        grid.style.width = '100%';
+        grid.data = data;
+    }
+
+    function load_data_with_sortabletable(rows, elapsed) {
         var thead = document.getElementById("thead");
         var tbody = document.getElementById("tbody");
 
@@ -190,8 +229,6 @@
         }
 
         Sortable.initTable(document.querySelector('#sortable_table'))
-        var div = document.getElementById('query_elapsed');
-        div.innerHTML = `<span class="elapsed">Elapsed</span><span>${elapsed} ms</span>`;
     }
     function addCell(tr, type, value) {
         var td = document.createElement(type)
