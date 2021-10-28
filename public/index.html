@@ -169,51 +169,59 @@
             const elapsed = Date.now();
             // const result = await conn.runQuery(query);
             const result = await conn.sendQuery(query);
-            const batch = (await result.next()).value;
+
+            let batch = (await result.next()).value;
+            const field_names = []
+            for (let field of batch.schema.fields) {
+                field_names.push(field.name)
+            }
+
+            var data = []
+            while(batch.length > 0) {
+                for (let row of batch) {
+                    let r = {}
+                    for (let f of field_names) {
+                        r[f] = row[f];
+                    }
+                    data.push(r)
+                }
+                batch = (await result.next()).value;
+                if (!batch) break;
+            }
+            
             await conn.close();
             
             var div = document.getElementById('query_elapsed');
             div.innerHTML = `<span class="elapsed">Elapsed</span><span>${Date.now() - elapsed} ms</span>`;
             
-            load_data_with_canvasgrid(batch);
+            load_data_with_canvasgrid(data);
             // load_data_with_sortabletable(batch, Date.now() - elapsed);
         } 
         catch (e) {
             var div = document.getElementById('query_elapsed');
             div.innerHTML = `<span class="error_query">${e.message}</span>`;
+            load_data_with_canvasgrid(null);
         }
     }
 
-    function load_data_with_canvasgrid(rows) {
+    function load_data_with_canvasgrid(data) {
         var parentNode = document.getElementById('grid');
         parentNode.innerHTML = ''
-        
-        var field_names = []
-        for (let field of rows.schema.fields) {
-            field_names.push(field.name)
+
+        if (data) {
+            var grid = canvasDatagrid({
+                parentNode: parentNode,
+                style: {
+                    overflowX: 'hidden',
+                    overflowY: 'hidden',
+                }
+            });
+
+            grid.style.cellWidth = 150;
+            grid.style.height = '500px';
+            grid.style.width = '100%';
+            grid.data = data;
         }
-
-        var data = []
-        for (let row of rows) {
-            let r = {}
-            for (let f of field_names) {
-                r[f] = row[f];
-            }
-            data.push(r)
-        }
-
-        var grid = canvasDatagrid({
-            parentNode: parentNode,
-            style: {
-            	overflowX: 'hidden',
-                overflowY: 'hidden',
-            }
-        });
-
-        grid.style.cellWidth = 150;
-        grid.style.height = '500px';
-        grid.style.width = '100%';
-        grid.data = data;
     }
 
     function load_data_with_sortabletable(rows, elapsed) {
