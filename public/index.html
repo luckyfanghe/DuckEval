@@ -129,7 +129,7 @@
                 "Cmd-Enter":  function(cm) {
                     onClickPlay()
                 },
-                'Ctrl-/': function(cm) {
+                'Cmd-/': function(cm) {
                     sql_editer.execCommand('toggleComment')
                 }
             },
@@ -149,9 +149,17 @@
     }
 
     function onClickPlay() {
-        query = sql_editer.getValue()
+        let selected = sql_editer.getSelection();
+        if (selected) {
+            run_query(selected.replaceAll('#', '-- '));
+            return;
+        }
+        
+        let query = sql_editer.getValue();
+        let cursor = sql_editer.getCursor();
         if (query) {
-            run_query(query.replaceAll('#', '-- '));
+            queries = query.split('\n');
+            run_query(queries[cursor.line].replaceAll('#', '-- '));
         }
     }
 
