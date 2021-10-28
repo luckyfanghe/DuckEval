@@ -38,6 +38,10 @@
     display: none;
 } */
 
+#query_elapsed {
+    margin-bottom: 6px;
+}
+
 .elapsed {
     font-weight: bold;
     margin: 10px;

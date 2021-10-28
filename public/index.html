@@ -12,6 +12,7 @@
     <script src="http://codemirror.net/mode/sql/sql.js"></script>
     <script src="http://codemirror.net/addon/hint/show-hint.js"></script>
     <script src="http://codemirror.net/addon/hint/sql-hint.js"></script>
+    <script src="http://codemirror.net/addon/comment/comment.js"></script>
     <script src="http://pure.github.io/pure/libs/pure.js"></script>
     <script src="https://unpkg.com/canvas-datagrid"></script>
     <script src="./static/js/sortable.js"></script>
@@ -22,10 +23,13 @@
     <h2>SQL Editer</h2>
     <button type="button" class="btn" style="float: left;" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
     <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
-    -- Use '--' for comments
+    # Use '--' or '#' for comments.
+    -- space needed after '--'
+
     SELECT 1 AS 'Result' 
         UNION SELECT 2
         UNION SELECT 3
+
     </textarea>
     <div class="file_browser_container">
         <!-- <label for="file-input">
@@ -124,6 +128,9 @@
                 "Ctrl-Space": "autocomplete",
                 "Cmd-Enter":  function(cm) {
                     onClickPlay()
+                },
+                'Ctrl-/': function(cm) {
+                    sql_editer.execCommand('toggleComment')
                 }
             },
             hintOptions: {tables: {
@@ -144,7 +151,7 @@
     function onClickPlay() {
         query = sql_editer.getValue()
         if (query) {
-            run_query(query);
+            run_query(query.replaceAll('#', '-- '));
         }
     }
 
