@@ -147,6 +147,10 @@
         console.log(this.files[0])
         await db.registerFileHandle(this.files[0].name, this.files[0])
         run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
+
+        const table_name = this.files[0].name.split('.')[0];
+
+        run_only_query(`create table '${table_name}' as (select * from '${this.files[0].name}')`);
         fetch("/registerfile", {
             method: "POST", 
             body: JSON.stringify({
@@ -176,6 +180,22 @@
             run_query(queries[cursor.line].replaceAll('#', '-- '));
         }
     }
+
+    async function run_only_query(query, preview=false) {
+        try {
+            const conn = await db.connect();
+            await conn.runQuery(query);
+            await conn.close();
+        } 
+        catch (e) {
+            if (!preview) {
+                var div = document.getElementById('query_elapsed');
+                div.innerHTML = `<span class="error_query">${e.message}</span>`;
+            }
+        }
+
+        return false;
+    } 
 
     async function run_query(query, preview=false) {
         try {
