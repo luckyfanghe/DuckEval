@@ -147,6 +147,19 @@
         console.log(this.files[0])
         await db.registerFileHandle(this.files[0].name, this.files[0])
         run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
+        fetch("/registerfile", {
+            method: "POST", 
+            body: JSON.stringify({
+                filename: this.files[0].name,
+                size: this.files[0].size,
+                lastModified: this.files[0].lastModified
+            }),
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        }).then(res => {
+            console.log("Request complete! response:", res);
+        });
     }
 
     function onClickPlay() {
@@ -208,8 +221,8 @@
             if (!preview) {
                 var div = document.getElementById('query_elapsed');
                 div.innerHTML = `<span class="error_query">${e.message}</span>`;
-                load_data_with_canvasgrid(null);
             }
+            load_data_with_canvasgrid(null);
         }
 
         return false;
