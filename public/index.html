@@ -146,6 +146,7 @@
     async function registerFile() {
         console.log(this.files[0])
         await db.registerFileHandle(this.files[0].name, this.files[0])
+        run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
     }
 
     function onClickPlay() {
@@ -163,7 +164,7 @@
         }
     }
 
-    async function run_query(query) {
+    async function run_query(query, preview=false) {
         try {
             const conn = await db.connect();
             const elapsed = Date.now();
@@ -192,16 +193,26 @@
             await conn.close();
             
             var div = document.getElementById('query_elapsed');
-            div.innerHTML = `<span class="elapsed">Elapsed</span><span>${Date.now() - elapsed} ms</span>`;
-            
+            if (preview) {
+                div.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
+            } else {
+                div.innerHTML = `<span class="elapsed">Elapsed :</span><span>${Date.now() - elapsed} ms</span>`;
+            }
+
             load_data_with_canvasgrid(data);
             // load_data_with_sortabletable(batch, Date.now() - elapsed);
+
+            return true;
         } 
         catch (e) {
-            var div = document.getElementById('query_elapsed');
-            div.innerHTML = `<span class="error_query">${e.message}</span>`;
-            load_data_with_canvasgrid(null);
+            if (!preview) {
+                var div = document.getElementById('query_elapsed');
+                div.innerHTML = `<span class="error_query">${e.message}</span>`;
+                load_data_with_canvasgrid(null);
+            }
         }
+
+        return false;
     }
 
     function load_data_with_canvasgrid(data) {
