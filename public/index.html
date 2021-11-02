@@ -25,10 +25,11 @@
     <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
     # Use '--' or '#' for comments.
     -- space needed after '--'
+    -- use semicolon (;) at the end of multiline query
 
     SELECT 1 AS 'Result' 
         UNION SELECT 2
-        UNION SELECT 3
+        UNION SELECT 3;
 
     </textarea>
     <div class="file_browser_container">
@@ -50,7 +51,7 @@
 </div>
 
 <script>
-    const libraryVersion = "0.0.41-dev180.0";
+    const libraryVersion = "0.0.41-dev427.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var db, sql_editer;
 
@@ -105,6 +106,25 @@
         db = new duckdb.AsyncDuckDB(logger, worker);
         await db.instantiate(wasmURL, pThreadURL);
         console.log(db.getVersion());
+        readFile('/static/local.csv');
+    }
+
+    function readFile(file)
+    {
+        var f = new XMLHttpRequest();
+        f.open("GET", file, false);
+        f.onreadystatechange = function ()
+        {
+            if(f.readyState === 4)
+            {
+                if(f.status === 200 || f.status == 0)
+                {
+                    var res= f.responseText;
+                    db.regi
+                }
+            }
+        }
+        f.send();
     }
 
     window.onload = function () { 
@@ -157,7 +177,13 @@
         let cursor = sql_editer.getCursor();
         if (query) {
             queries = query.split('\n');
-            run_query(queries[cursor.line].replaceAll('#', '-- '));
+            query = ''
+            for (let l=cursor.line; l<queries.length; l++) {
+                query += queries[l].replaceAll('#', '-- ') + '\n';
+                if (query.indexOf(";") > 0)
+                    break;
+            }
+            run_query(query);
         }
     }
 
