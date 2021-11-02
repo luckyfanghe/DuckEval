@@ -51,8 +51,7 @@
 
 <script>
     const libraryVersion = "0.0.41-dev180.0";
-    const packageName = "@duckdb/duckdb-wasm";
-    const distURL = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@0.0.41-dev180.0/dist/";
+    const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var db, sql_editer;
 
     DUCKDB_BUNDLES = ({
@@ -80,7 +79,7 @@
     }
 
     async function load() {
-        duckdb = await import(`https://cdn.skypack.dev/${packageName}@${libraryVersion}`);
+        duckdb = await import(`https://cdn.skypack.dev/@duckdb/duckdb-wasm@${libraryVersion}`);
         bundle = await duckdb.selectBundle(DUCKDB_BUNDLES);
 
         // download worker script
@@ -106,13 +105,6 @@
         db = new duckdb.AsyncDuckDB(logger, worker);
         await db.instantiate(wasmURL, pThreadURL);
         console.log(db.getVersion());
-    }
-
-    async function test(db) {
-        const conn = await db.connect();
-        const result = await conn.runQuery(`SELECT 1 AS 'Result' UNION SELECT 11 UNION SELECT 22 UNION SELECT 111 UNION SELECT 222`);
-        await conn.close();
-        console.log(result);
     }
 
     window.onload = function () { 
@@ -144,26 +136,14 @@
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
-        console.log(this.files[0])
-        await db.registerFileHandle(this.files[0].name, this.files[0])
-        run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
+        db.registerFileHandle(this.files[0].name, this.files[0])
+        await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
+        setTimeout(background_process(this.files[0]), 100);
+    }
 
-        const table_name = this.files[0].name.split('.')[0];
-
-        run_only_query(`create table '${table_name}' as (select * from '${this.files[0].name}')`);
-        fetch("/registerfile", {
-            method: "POST", 
-            body: JSON.stringify({
-                filename: this.files[0].name,
-                size: this.files[0].size,
-                lastModified: this.files[0].lastModified
-            }),
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        }).then(res => {
-            console.log("Request complete! response:", res);
-        });
+    function background_process(file) {
+        const table_name = file.name.split('.')[0];
+        run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`);
     }
 
     function onClickPlay() {
