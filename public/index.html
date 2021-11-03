@@ -21,8 +21,10 @@
 <body>
 <div>
     <h2>SQL Editer</h2>
-    <button type="button" class="btn" style="float: left;" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
-    <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
+    <div class="sql_editer_container">
+        <div class="left_panel">
+            <button type="button" class="btn" style="float: left;" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
+            <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
     # Use '--' or '#' for comments.
     -- space needed after '--'
     -- use semicolon (;) at the end of multiline query
@@ -30,8 +32,24 @@
     SELECT 1 AS 'Result' 
         UNION SELECT 2
         UNION SELECT 3;
-
-    </textarea>
+            </textarea>
+        </div>
+        <div class="right_panel">
+            <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
+                <thead id="thead">
+                    <tr>
+                        <th>Name</th>
+                        <th>Size</th>
+                        <th>FileLastModified</th>
+                        <th>PreviewGenerated</th>
+                        <th>Local Table</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody">
+                </tbody>
+            </table>
+        </div>
+    </div>
     <div class="file_browser_container">
         <!-- <label for="file-input">
             <img src="/static/images/upload.svg" style="width: 30px;"/>
@@ -42,18 +60,13 @@
     </div>
     <div id="query_elapsed"></div>
     <div id="grid"></div>
-    <!-- <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
-        <thead id="thead">
-        </thead>
-        <tbody id="tbody">
-        </tbody>
-    </table> -->
 </div>
 
 <script>
     const libraryVersion = "0.0.41-dev427.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var db, sql_editer;
+    var internal_tables = [];
 
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -156,14 +169,49 @@
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
-        db.registerFileHandle(this.files[0].name, this.files[0])
-        await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
-        setTimeout(background_process(this.files[0]), 100);
+        db.registerFileHandle(this.files[0].name, this.files[0]);
+        let preview = await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
+        setTimeout(background_process(this.files[0], preview), 100);
     }
 
-    function background_process(file) {
+    function background_process(file, preview) {
         const table_name = file.name.split('.')[0];
-        run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`);
+        let exist = false;
+        for (let t of internal_tables) {
+            if (t.name == table_name) {
+                exist = true;
+                break;
+            }
+        }
+        if (!exist) {
+            internal_tables.push({
+                name: table_name,
+                size: file.size,
+                lastmodified: new Date(file.lastModified).toUTCString(),
+                preview: preview ? 'Yes': 'No',
+                localtable: file.name
+            })
+            run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`);
+            refresh_internal_table();
+        }
+    }
+
+    function refresh_internal_table() {
+        var tbody = document.getElementById("tbody");
+
+        while (tbody.hasChildNodes()) {
+            tbody.removeChild(tbody.lastChild);
+        }
+
+        for (let t of internal_tables) {
+            var tr = document.createElement("tr");
+            for (let k in t) {
+                addCell(tr, "td", t[k]);
+            }
+            tbody.appendChild(tr);
+        }
+
+        Sortable.initTable(document.querySelector('#sortable_table'))
     }
 
     function onClickPlay() {
@@ -239,7 +287,6 @@
             }
 
             load_data_with_canvasgrid(data);
-            // load_data_with_sortabletable(batch, Date.now() - elapsed);
 
             return true;
         } 
@@ -274,7 +321,7 @@
         }
     }
 
-    function load_data_with_sortabletable(rows, elapsed) {
+    function load_data_with_sortabletable(rows) {
         var thead = document.getElementById("thead");
         var tbody = document.getElementById("tbody");
 

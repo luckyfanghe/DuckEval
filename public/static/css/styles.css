@@ -51,3 +51,18 @@
     color: #cd2525;
     margin: 10px;
 }
+
+.sql_editer_container {
+    min-height: 320px;
+}
+
+.left_panel {
+    width: 50%;
+    float: left;
+    border-right: 1px solid #dddddd;
+}
+
+.right_panel {
+    width: 48%;
+    float: right;
+}
