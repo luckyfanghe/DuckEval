@@ -15,6 +15,7 @@
     <script src="http://codemirror.net/addon/comment/comment.js"></script>
     <script src="http://pure.github.io/pure/libs/pure.js"></script>
     <script src="https://unpkg.com/canvas-datagrid"></script>
+    <script src="https://unpkg.com/node-sql-parser/umd/mysql.umd.js"></script>
     <script src="./static/js/sortable.js"></script>
 </head>
 
@@ -65,7 +66,7 @@
 <script>
     const libraryVersion = "0.0.41-dev427.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
-    var db, sql_editer;
+    var db, sql_editer, sql_parser;
     var internal_tables = [];
 
     DUCKDB_BUNDLES = ({
@@ -163,6 +164,7 @@
                 countries: {name: null, population: null, size: null}
             }}
         });
+        sql_parser = new NodeSQLParser.Parser();
         load();
     };
 
@@ -175,7 +177,7 @@
     }
 
     function background_process(file, preview) {
-        const table_name = file.name.split('.')[0];
+        const table_name = file.name.split('.')[0].toLowerCase();
         let exist = false;
         for (let t of internal_tables) {
             if (t.name == table_name) {
@@ -184,15 +186,18 @@
             }
         }
         if (!exist) {
-            internal_tables.push({
-                name: table_name,
-                size: file.size,
-                lastmodified: new Date(file.lastModified).toUTCString(),
-                preview: preview ? 'Yes': 'No',
-                localtable: file.name
+            run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then((res) => {
+                if (res) {
+                    internal_tables.push({
+                        name: table_name,
+                        size: file.size,
+                        lastmodified: new Date(file.lastModified).toUTCString(),
+                        preview: preview ? 'Yes': 'No',
+                        localtable: file.name
+                    });
+                    refresh_internal_table();
+                }
             })
-            run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`);
-            refresh_internal_table();
         }
     }
 
@@ -222,16 +227,61 @@
         }
         
         let query = sql_editer.getValue();
-        let cursor = sql_editer.getCursor();
-        if (query) {
-            queries = query.split('\n');
-            query = ''
-            for (let l=cursor.line; l<queries.length; l++) {
-                query += queries[l].replaceAll('#', '-- ') + '\n';
-                if (query.indexOf(";") > 0)
-                    break;
+        let ast, sql;
+
+        try {
+            ast = sql_parser.astify(query);
+            if (typeof(ast) == 'undefined' || ast.length == 0) return;
+            if (ast.length == 1) {
+                sql = sql_parser.sqlify(ast);
+                run_query(sql.replaceAll('`', "'"));
+                return;
             }
-            run_query(query);
+        } catch (e) {
+            var div = document.getElementById('query_elapsed');
+            div.innerHTML = `<span class="error_code">${e.message}</span>`;
+            return
+        }
+
+        let cursor = sql_editer.getCursor();
+        if (cursor.line == 0) {
+            sql = sql_parser.sqlify(ast[0]);
+            run_query(sql.replaceAll('`', "'"));
+            return;
+        }
+
+        queries = query.split('\n');
+        query = ''
+        for (let i=cursor.line-1; i>0; i--) { // scan up direction of current cursor
+            line = queries[i].trim();
+            if (line.startsWith("-- ") || line.startsWith("#"))
+                continue;
+
+            if (line.indexOf(";") > 0)
+                break;
+
+            if (line.length > 0)
+                query = line + '\n' + query;
+        }
+
+        for (let i=cursor.line; i<queries.length; i++) { // scan down direction of current cursor
+            line = queries[i].trim();
+            if (line.startsWith("-- ") || line.startsWith("#"))
+                continue;
+
+            if (line.length > 0) {
+                query += line + '\n';
+                if (line.indexOf(";") > 0)
+                   break;
+            }
+        }
+
+        if (query) {
+            ast = sql_parser.astify(query);
+            if (typeof(ast) == 'undefined' || ast.length == 0) return;
+            
+            sql = sql_parser.sqlify(ast);
+            run_query(sql.replaceAll('`', "'"));
         }
     }
 
@@ -240,11 +290,14 @@
             const conn = await db.connect();
             await conn.runQuery(query);
             await conn.close();
+            return true;
         } 
         catch (e) {
-            if (!preview) {
-                var div = document.getElementById('query_elapsed');
-                div.innerHTML = `<span class="error_query">${e.message}</span>`;
+            var div = document.getElementById('query_elapsed');
+            if (preview) {
+                div.innerHTML = `<span class="error_query">Can't create internal table.</span><br><span class="error_code">${e.message}</span>`;
+            } else {
+                div.innerHTML = `<span class="error_code">${e.message}</span>`;
             }
         }
 
@@ -293,7 +346,7 @@
         catch (e) {
             if (!preview) {
                 var div = document.getElementById('query_elapsed');
-                div.innerHTML = `<span class="error_query">${e.message}</span>`;
+                div.innerHTML = `<span class="error_code">${e.message}</span>`;
             }
             load_data_with_canvasgrid(null);
         }

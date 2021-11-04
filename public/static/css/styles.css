@@ -50,6 +50,12 @@
 .error_query {
     color: #cd2525;
     margin: 10px;
+    font-weight: bold;
+}
+
+.error_code {
+    color: #cd2525;
+    margin: 10px;
 }
 
 .sql_editer_container {
