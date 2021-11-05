@@ -15,7 +15,7 @@
     <script src="http://codemirror.net/addon/comment/comment.js"></script>
     <script src="http://pure.github.io/pure/libs/pure.js"></script>
     <script src="https://unpkg.com/canvas-datagrid"></script>
-    <script src="https://unpkg.com/node-sql-parser/umd/mysql.umd.js"></script>
+    <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/sortable.js"></script>
 </head>
 
@@ -172,32 +172,46 @@
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
         db.registerFileHandle(this.files[0].name, this.files[0]);
+
+        let existTable = false
+        for (let i=0; i<internal_tables.length; i++) {
+            if (internal_tables[i].name == this.files[0].name) {
+                existTable = true;
+                break;
+            }
+        }
+        if (!existTable) {
+            internal_tables.push({
+                name: this.files[0].name,
+                size: this.files[0].size,
+                lastmodified: new Date(this.files[0].lastModified).toUTCString(),
+                preview: 'No',
+                localtable: ''
+            });
+            refresh_internal_table();
+        }
+        
         let preview = await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
         setTimeout(background_process(this.files[0], preview), 100);
     }
 
     function background_process(file, preview) {
         const table_name = file.name.split('.')[0].toLowerCase();
-        let exist = false;
-        for (let t of internal_tables) {
-            if (t.name == table_name) {
-                exist = true;
+        for (let i=0; i<internal_tables.length; i++) {
+            if (internal_tables[i].name == file.name) {
+                internal_tables[i].preview = preview ? 'Yes': 'No';
+                refresh_internal_table();
+
+                if (internal_tables[i].localtable == '') {
+                    run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then((res) => {
+                        if (res) {
+                            internal_tables[i].localtable = table_name;
+                            refresh_internal_table();
+                        }
+                    })
+                }
                 break;
             }
-        }
-        if (!exist) {
-            run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then((res) => {
-                if (res) {
-                    internal_tables.push({
-                        name: table_name,
-                        size: file.size,
-                        lastmodified: new Date(file.lastModified).toUTCString(),
-                        preview: preview ? 'Yes': 'No',
-                        localtable: file.name
-                    });
-                    refresh_internal_table();
-                }
-            })
         }
     }
 
@@ -228,13 +242,19 @@
         
         let query = sql_editer.getValue();
         let ast, sql;
+        query = query.replaceAll('#', '-- ');
 
         try {
             ast = sql_parser.astify(query);
-            if (typeof(ast) == 'undefined' || ast.length == 0) return;
+            if (typeof(ast) == 'undefined' || typeof(ast.length) == 'undefined') {
+                if (ast.type != null && ast.columns.length > 0) {
+                    run_query(query);
+                }
+                return;
+            } 
             if (ast.length == 1) {
                 sql = sql_parser.sqlify(ast);
-                run_query(sql.replaceAll('`', "'"));
+                run_query(sql);
                 return;
             }
         } catch (e) {
@@ -246,7 +266,7 @@
         let cursor = sql_editer.getCursor();
         if (cursor.line == 0) {
             sql = sql_parser.sqlify(ast[0]);
-            run_query(sql.replaceAll('`', "'"));
+            run_query(sql);
             return;
         }
 
@@ -278,10 +298,15 @@
 
         if (query) {
             ast = sql_parser.astify(query);
-            if (typeof(ast) == 'undefined' || ast.length == 0) return;
+            if (typeof(ast) == 'undefined' || typeof(ast.length) == 'undefined') {
+                if (ast.type != null && ast.columns.length > 0) {
+                    run_query(query);
+                }
+                return;
+            }
             
             sql = sql_parser.sqlify(ast);
-            run_query(sql.replaceAll('`', "'"));
+            run_query(sql);
         }
     }
 
