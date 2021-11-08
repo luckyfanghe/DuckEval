@@ -190,22 +190,25 @@
             });
             refresh_internal_table();
         }
-        
+
+        preview_time = Date.now()
         let preview = await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
-        setTimeout(background_process(this.files[0], preview), 100);
+        setTimeout(background_process(this.files[0], preview, (Date.now()-preview_time)/1000), 100);
     }
 
-    function background_process(file, preview) {
+    function background_process(file, preview, elapsed) {
         const table_name = file.name.split('.')[0].toLowerCase();
         for (let i=0; i<internal_tables.length; i++) {
             if (internal_tables[i].name == file.name) {
-                internal_tables[i].preview = preview ? 'Yes': 'No';
+                internal_tables[i].preview = preview ? `Yes (${elapsed.toFixed(2)}s)`: 'No';
                 refresh_internal_table();
 
                 if (internal_tables[i].localtable == '') {
+                    elapsed = Date.now()
                     run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then((res) => {
                         if (res) {
-                            internal_tables[i].localtable = table_name;
+                            elapsed = (Date.now() - elapsed) / 1000
+                            internal_tables[i].localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
                             refresh_internal_table();
                         }
                     })
