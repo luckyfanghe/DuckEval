@@ -25,7 +25,11 @@
     <h2>SQL Editer</h2>
     <div class="sql_editer_container">
         <div class="left_panel">
-            <button type="button" class="btn" style="float: left;" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
+            <div style="float: left;">
+                <button type="button" class="btn" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
+                <br><br>
+                <button type="button" class="btn" onclick="onClickCancel()"><img src="/static/images/cancel.svg" style="width: 15px; margin: 0;"></button>
+            </div>
             <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
     # Use '--' or '#' for comments.
     -- space needed after '--'
@@ -69,6 +73,7 @@
     // const libraryVersion = "0.1.12-dev54.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var duck_db, i_db, sql_editer, sql_parser;
+    var cancel_query = false
     var internal_tables = [];
 
     DUCKDB_BUNDLES = ({
@@ -244,6 +249,8 @@
     }
 
     function onClickPlay() {
+        cancel_query = false;
+
         let selected = sql_editer.getSelection();
         if (selected) {
             run_query(selected.replaceAll('#', '-- '));
@@ -320,6 +327,10 @@
         }
     }
 
+    function onClickCancel() {
+        cancel_query = true
+    }
+
     async function run_only_query(query, preview=false) {
         try {
             const conn = await duck_db.connect();
@@ -353,7 +364,7 @@
             }
 
             var data = []
-            while(batch.length > 0) {
+            while(batch.length > 0 && !cancel_query) {
                 for (let row of batch) {
                     let r = {}
                     for (let f of field_names) {
@@ -361,6 +372,7 @@
                     }
                     data.push(r)
                 }
+                if (cancel_query) break;
                 batch = (await result.next()).value;
                 if (!batch) break;
             }
@@ -368,10 +380,14 @@
             await conn.close();
             
             var div = document.getElementById('query_elapsed');
-            if (preview) {
-                div.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
+            if (cancel_query) {
+                div.innerHTML = `<span class="error_code">Query was canceled </span>`;
             } else {
-                div.innerHTML = `<span class="elapsed">Elapsed :</span><span>${Date.now() - elapsed} ms</span>`;
+                if (preview) {
+                    div.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
+                } else {
+                    div.innerHTML = `<span class="elapsed">Elapsed :</span><span>${Date.now() - elapsed} ms</span>`;
+                }
             }
 
             load_data_with_canvasgrid(data);
@@ -392,6 +408,9 @@
     function load_data_with_canvasgrid(data) {
         var parentNode = document.getElementById('grid');
         parentNode.innerHTML = ''
+
+        if (cancel_query)
+            return;
 
         if (data) {
             var grid = canvasDatagrid({
