@@ -17,6 +17,7 @@
     <script src="https://unpkg.com/canvas-datagrid"></script>
     <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/sortable.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
 </head>
 
 <body>
@@ -65,8 +66,9 @@
 
 <script>
     const libraryVersion = "0.0.41-dev427.0";
+    // const libraryVersion = "0.1.12-dev54.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
-    var db, sql_editer, sql_parser;
+    var duck_db, i_db, sql_editer, sql_parser;
     var internal_tables = [];
 
     DUCKDB_BUNDLES = ({
@@ -117,28 +119,26 @@
 
         const logger = new duckdb.ConsoleLogger();
         const worker = new Worker(workerURL);
-        db = new duckdb.AsyncDuckDB(logger, worker);
-        await db.instantiate(wasmURL, pThreadURL);
-        console.log(db.getVersion());
-        readFile('/static/local.csv');
+        duck_db = new duckdb.AsyncDuckDB(logger, worker);
+        await duck_db.instantiate(wasmURL, pThreadURL);
+        console.log(duck_db.getVersion());
     }
 
-    function readFile(file)
-    {
-        var f = new XMLHttpRequest();
-        f.open("GET", file, false);
-        f.onreadystatechange = function ()
-        {
-            if(f.readyState === 4)
-            {
-                if(f.status === 200 || f.status == 0)
-                {
-                    var res= f.responseText;
-                    db.regi
-                }
-            }
-        }
-        f.send();
+    async function init_idb() {
+        await idb.deleteDB('DuckEval');
+        i_db = await idb.openDB('DuckEval', 2, {
+            upgrade(i_db) {
+                // Create a store of objects
+                const store = i_db.createObjectStore('internal_tables', {
+                    // The 'id' property of the object will be the key.
+                    keyPath: 'id',
+                    // If it isn't explicitly set, create a value by auto incrementing.
+                    autoIncrement: true,
+                });
+                // Create an index on the 'tname' property of the objects.
+                store.createIndex('tname', 'tname');
+            },
+        });
     }
 
     window.onload = function () { 
@@ -166,12 +166,13 @@
         });
         sql_parser = new NodeSQLParser.Parser();
         load();
+        init_idb();
     };
 
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
-        db.registerFileHandle(this.files[0].name, this.files[0]);
+        duck_db.registerFileHandle(this.files[0].name, this.files[0]);
 
         let existTable = false
         for (let i=0; i<internal_tables.length; i++) {
@@ -210,6 +211,7 @@
                             elapsed = (Date.now() - elapsed) / 1000
                             internal_tables[i].localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
                             refresh_internal_table();
+                            update_idb(table_name);
                         }
                     })
                 }
@@ -234,6 +236,11 @@
         }
 
         Sortable.initTable(document.querySelector('#sortable_table'))
+    }
+
+    async function update_idb(table_name) {
+        await i_db.add('internal_tables', {tname: table_name});
+        console.log(await i_db.getAllFromIndex('internal_tables', 'tname'));
     }
 
     function onClickPlay() {
@@ -315,7 +322,7 @@
 
     async function run_only_query(query, preview=false) {
         try {
-            const conn = await db.connect();
+            const conn = await duck_db.connect();
             await conn.runQuery(query);
             await conn.close();
             return true;
@@ -334,7 +341,7 @@
 
     async function run_query(query, preview=false) {
         try {
-            const conn = await db.connect();
+            const conn = await duck_db.connect();
             const elapsed = Date.now();
             // const result = await conn.runQuery(query);
             const result = await conn.sendQuery(query);
