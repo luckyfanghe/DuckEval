@@ -28,7 +28,10 @@
             <div style="float: left;">
                 <button type="button" class="btn" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
                 <br><br>
-                <button type="button" class="btn" onclick="onClickCancel()"><img src="/static/images/cancel.svg" style="width: 15px; margin: 0;"></button>
+                <button type="button" class="btn tooltip" onclick="onClickCancel()">
+                    <img src="/static/images/cancel.svg" style="width: 15px; margin: 0;">
+                    <span class="tooltiptext tooltip-right">If click this button, the query will be stopped right away and initialized database</span>
+                </button>
             </div>
             <textarea rows="4" cols="50" name="textarea_sql_editer" id="textarea_sql_editer">
     # Use '--' or '#' for comments.
@@ -56,6 +59,11 @@
             </table>
         </div>
     </div>
+    <div class="loader" id="loader">
+        <div class="inner one"></div>
+        <div class="inner two"></div>
+        <div class="inner three"></div>
+    </div>
     <div class="file_browser_container">
         <!-- <label for="file-input">
             <img src="/static/images/upload.svg" style="width: 30px;"/>
@@ -72,8 +80,9 @@
     const libraryVersion = "0.0.41-dev427.0";
     // const libraryVersion = "0.1.12-dev54.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
-    var duck_db, i_db, sql_editer, sql_parser;
-    var cancel_query = false
+    var duck_db, i_db, duckdb_wasmURL, duckdb_pThreadURL;
+    var sql_editer, sql_parser;
+    var cancel_query = false, duck_db_conn, is_running_query = false;
     var internal_tables = [];
 
     DUCKDB_BUNDLES = ({
@@ -92,12 +101,13 @@
         },
     })
 
-    async function makeDB() {
+    async function initialze_duckdb() {
         const logger = new duckdb.ConsoleLogger();
         const worker = new Worker(workerURL);
-        const db = new duckdb.AsyncDuckDB(logger, worker);
-        await db.instantiate(wasmURL, pThreadURL);
-        return db;
+        duck_db = new duckdb.AsyncDuckDB(logger, worker);
+        await duck_db.instantiate(duckdb_wasmURL, duckdb_pThreadURL);
+        console.log(duck_db.getVersion());
+        is_running_query = false;
     }
 
     async function load() {
@@ -112,21 +122,17 @@
 
         // download WASM
         let wasmReq = await fetch(bundle.mainModule);
-        wasmURL = URL.createObjectURL(await wasmReq.blob());
+        duckdb_wasmURL = URL.createObjectURL(await wasmReq.blob());
 
         // download Wasm
         if (!bundle.pthreadWorker) {
-            pThreadURL = undefined;
+            duckdb_pThreadURL = undefined;
         } else {
             let pthreadReq = await fetch(bundle.pthreadWorker);
-            pThreadURL = URL.createObjectURL(await pthreadReq.blob());
+            duckdb_pThreadURL = URL.createObjectURL(await pthreadReq.blob());
         }
 
-        const logger = new duckdb.ConsoleLogger();
-        const worker = new Worker(workerURL);
-        duck_db = new duckdb.AsyncDuckDB(logger, worker);
-        await duck_db.instantiate(wasmURL, pThreadURL);
-        console.log(duck_db.getVersion());
+        await initialze_duckdb();
     }
 
     async function init_idb() {
@@ -192,7 +198,9 @@
                 size: this.files[0].size,
                 lastmodified: new Date(this.files[0].lastModified).toUTCString(),
                 preview: 'No',
-                localtable: ''
+                tablename: '',
+                localtable: '',
+                file_handle: this.files[0]
             });
             refresh_internal_table();
         }
@@ -214,6 +222,7 @@
                     run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then((res) => {
                         if (res) {
                             elapsed = (Date.now() - elapsed) / 1000
+                            internal_tables[i].tablename = table_name;
                             internal_tables[i].localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
                             refresh_internal_table();
                             update_idb(table_name);
@@ -235,7 +244,8 @@
         for (let t of internal_tables) {
             var tr = document.createElement("tr");
             for (let k in t) {
-                addCell(tr, "td", t[k]);
+                if (k != 'file_handle' && k != 'tablename')
+                    addCell(tr, "td", t[k]);
             }
             tbody.appendChild(tr);
         }
@@ -327,8 +337,34 @@
         }
     }
 
-    function onClickCancel() {
-        cancel_query = true
+    async function reregister_files() {
+        for (let t of internal_tables) {
+            await duck_db.registerFileHandle(t['name'], t['file_handle']);
+            if (t['tablename'])
+                await run_only_query(`CREATE TABLE IF NOT EXISTS '${t["tablename"]}' AS (SELECT * FROM '${t["name"]}')`, preview=false)
+        }
+    }
+
+    async function onClickCancel() {
+        var loader = document.getElementById("loader");
+        loader.classList.add("show_block");
+
+        load_data_with_canvasgrid(null);
+        var div = document.getElementById('query_elapsed');
+
+        if (is_running_query) {
+            cancel_query = true;
+            // duck_db_conn.close();
+            div.innerHTML = `<span class="error_code">Query was canceled </span>`;
+            
+            await duck_db.terminate();
+            await initialze_duckdb();
+            await reregister_files();
+        } else {
+            div.innerHTML = '';
+        }
+
+        loader.classList.remove("show_block");
     }
 
     async function run_only_query(query, preview=false) {
@@ -351,11 +387,13 @@
     } 
 
     async function run_query(query, preview=false) {
+        is_running_query = true
+
         try {
-            const conn = await duck_db.connect();
+            duck_db_conn = await duck_db.connect();
             const elapsed = Date.now();
             // const result = await conn.runQuery(query);
-            const result = await conn.sendQuery(query);
+            const result = await duck_db_conn.sendQuery(query);
 
             let batch = (await result.next()).value;
             const field_names = []
@@ -377,7 +415,7 @@
                 if (!batch) break;
             }
             
-            await conn.close();
+            await duck_db_conn.close();
             
             var div = document.getElementById('query_elapsed');
             if (cancel_query) {
@@ -406,6 +444,7 @@
     }
 
     function load_data_with_canvasgrid(data) {
+        is_running_query = false;
         var parentNode = document.getElementById('grid');
         parentNode.innerHTML = ''
 
