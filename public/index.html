@@ -28,7 +28,7 @@
             <div style="float: left;">
                 <button type="button" class="btn" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
                 <br><br>
-                <button type="button" class="btn tooltip" onclick="onClickCancel()">
+                <button type="button" class="btn tooltip cancel_button" onclick="onClickCancel()" id="cancel_button">
                     <img src="/static/images/cancel.svg" style="width: 15px; margin: 0;">
                     <span class="tooltiptext tooltip-right">If click this button, the query will be stopped right away and initialized database</span>
                 </button>
@@ -72,7 +72,7 @@
         <label for="qfile">Select files:</label>
         <input type="file" id="qfile" name="qfile" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
     </div>
-    <div id="query_elapsed"></div>
+    <div id="query_status"></div>
     <div id="grid"></div>
 </div>
 
@@ -82,7 +82,8 @@
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var duck_db, i_db, duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
-    var cancel_query = false, duck_db_conn, is_running_query = false;
+    var canvasgrid;
+    var cancel_query = false, first_result = false;
     var internal_tables = [];
 
     DUCKDB_BUNDLES = ({
@@ -107,7 +108,7 @@
         duck_db = new duckdb.AsyncDuckDB(logger, worker);
         await duck_db.instantiate(duckdb_wasmURL, duckdb_pThreadURL);
         console.log(duck_db.getVersion());
-        is_running_query = false;
+        first_result = false;
     }
 
     async function load() {
@@ -176,6 +177,18 @@
             }}
         });
         sql_parser = new NodeSQLParser.Parser();
+        canvasgrid = canvasDatagrid({
+                parentNode: document.getElementById('grid'),
+                style: {
+                    overflowX: 'hidden',
+                    overflowY: 'hidden',
+                }
+            });
+
+        canvasgrid.style.cellWidth = 150;
+        canvasgrid.style.height = '500px';
+        canvasgrid.style.width = '100%';
+
         load();
         init_idb();
     };
@@ -285,8 +298,8 @@
                 return;
             }
         } catch (e) {
-            var div = document.getElementById('query_elapsed');
-            div.innerHTML = `<span class="error_code">${e.message}</span>`;
+            var qstatus = document.getElementById('query_status');
+            qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
             return
         }
 
@@ -341,7 +354,7 @@
         for (let t of internal_tables) {
             await duck_db.registerFileHandle(t['name'], t['file_handle']);
             if (t['tablename'])
-                await run_only_query(`CREATE TABLE IF NOT EXISTS '${t["tablename"]}' AS (SELECT * FROM '${t["name"]}')`, preview=false)
+                run_only_query(`CREATE TABLE IF NOT EXISTS '${t["tablename"]}' AS (SELECT * FROM '${t["name"]}')`, preview=false)
         }
     }
 
@@ -349,22 +362,21 @@
         var loader = document.getElementById("loader");
         loader.classList.add("show_block");
 
-        load_data_with_canvasgrid(null);
-        var div = document.getElementById('query_elapsed');
+        canvasgrid.data = [];
+        var qstatus = document.getElementById('query_status');
+        qstatus.innerHTML = `<span class="error_code">Query was canceled </span>`;
 
-        if (is_running_query) {
-            cancel_query = true;
-            // duck_db_conn.close();
-            div.innerHTML = `<span class="error_code">Query was canceled </span>`;
-            
+        cancel_query = true;
+        if (!first_result) {
             await duck_db.terminate();
             await initialze_duckdb();
-            await reregister_files();
-        } else {
-            div.innerHTML = '';
+            setTimeout(reregister_files(), 200);
         }
 
         loader.classList.remove("show_block");
+
+        var cancel_button = document.getElementById("cancel_button");
+        cancel_button.classList.remove("show_block");
     }
 
     async function run_only_query(query, preview=false) {
@@ -375,33 +387,46 @@
             return true;
         } 
         catch (e) {
-            var div = document.getElementById('query_elapsed');
+            var qstatus = document.getElementById('query_status');
             if (preview) {
-                div.innerHTML = `<span class="error_query">Can't create internal table.</span><br><span class="error_code">${e.message}</span>`;
+                qstatus.innerHTML = `<span class="error_query">Can't create internal table.</span><br><span class="error_code">${e.message}</span>`;
             } else {
-                div.innerHTML = `<span class="error_code">${e.message}</span>`;
+                qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
             }
         }
 
         return false;
     } 
 
+    function show_loader() {
+        var loader = document.getElementById("loader");
+        loader.classList.add("show_block");
+        var cancel_button = document.getElementById("cancel_button");
+        cancel_button.classList.add("show_block");
+    }
+
     async function run_query(query, preview=false) {
-        is_running_query = true
+        first_result = false
+
+        var tid = setTimeout(show_loader, 300);
+        var qstatus = document.getElementById('query_status');
+        qstatus.innerHTML = '<span class="elapsed">Running...</span>';
+        var cancel_button = document.getElementById("cancel_button");
+        var loader = document.getElementById("loader");
+
+        var ret = false, data = [];
 
         try {
-            duck_db_conn = await duck_db.connect();
-            const elapsed = Date.now();
-            // const result = await conn.runQuery(query);
-            const result = await duck_db_conn.sendQuery(query);
+            var elapsed = Date.now();
+            const conn = await duck_db.connect();
+            const result = await conn.sendQuery(query);
 
             let batch = (await result.next()).value;
             const field_names = []
             for (let field of batch.schema.fields) {
                 field_names.push(field.name)
             }
-
-            var data = []
+            first_result = true
             while(batch.length > 0 && !cancel_query) {
                 for (let row of batch) {
                     let r = {}
@@ -415,56 +440,42 @@
                 if (!batch) break;
             }
             
-            await duck_db_conn.close();
-            
-            var div = document.getElementById('query_elapsed');
+            await conn.close();
+
             if (cancel_query) {
-                div.innerHTML = `<span class="error_code">Query was canceled </span>`;
+                qstatus.innerHTML = `<span class="error_code">Query was canceled </span>`;
             } else {
                 if (preview) {
-                    div.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
+                    qstatus.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
                 } else {
-                    div.innerHTML = `<span class="elapsed">Elapsed :</span><span>${Date.now() - elapsed} ms</span>`;
+                    elapsed = Date.now() - elapsed
+                    if (elapsed < 1000)
+                        qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed} ms</span>`;
+                    else {
+                        elapsed = elapsed / 1000
+                        qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed.toFixed(2)} s</span>`;
+                    }
                 }
             }
 
-            load_data_with_canvasgrid(data);
-
-            return true;
+            ret = true;
         } 
         catch (e) {
             if (!preview) {
-                var div = document.getElementById('query_elapsed');
-                div.innerHTML = `<span class="error_code">${e.message}</span>`;
+                qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
             }
-            load_data_with_canvasgrid(null);
+            data = [];
         }
 
-        return false;
-    }
-
-    function load_data_with_canvasgrid(data) {
-        is_running_query = false;
-        var parentNode = document.getElementById('grid');
-        parentNode.innerHTML = ''
-
+        clearTimeout(tid);
+        cancel_button.classList.remove("show_block");
+        loader.classList.remove("show_block");
         if (cancel_query)
-            return;
+            canvasgrid.data = [];
+        else
+            canvasgrid.data = data;
 
-        if (data) {
-            var grid = canvasDatagrid({
-                parentNode: parentNode,
-                style: {
-                    overflowX: 'hidden',
-                    overflowY: 'hidden',
-                }
-            });
-
-            grid.style.cellWidth = 150;
-            grid.style.height = '500px';
-            grid.style.width = '100%';
-            grid.data = data;
-        }
+        return ret;
     }
 
     function load_data_with_sortabletable(rows) {

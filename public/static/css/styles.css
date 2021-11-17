@@ -73,6 +73,9 @@
     float: right;
 }
 
+#query_status {
+    margin-bottom: 3px;
+}
 
 .loader {
     position: absolute;
@@ -140,10 +143,6 @@
     }
 }
 
-.show_block {
-    display: block !important;
-}
-
 .tooltip {
     position: relative;
     display: inline-block;
@@ -182,4 +181,13 @@
 .tooltip:hover .tooltiptext {
     visibility: visible;
     opacity: 1;
+}
+
+
+.cancel_button {
+    display: none;
+}
+
+.show_block {
+    display: block !important;
 }
