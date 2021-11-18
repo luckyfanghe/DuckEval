@@ -80,7 +80,7 @@
     const libraryVersion = "0.0.41-dev427.0";
     // const libraryVersion = "0.1.12-dev54.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
-    var duck_db, i_db, duckdb_wasmURL, duckdb_pThreadURL;
+    var duck_dbs = [], i_db, duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
     var canvasgrid;
     var cancel_query = false, first_result = false;
@@ -102,13 +102,14 @@
         },
     })
 
-    async function initialze_duckdb() {
+    async function make_duckdb() {
         const logger = new duckdb.ConsoleLogger();
         const worker = new Worker(workerURL);
-        duck_db = new duckdb.AsyncDuckDB(logger, worker);
-        await duck_db.instantiate(duckdb_wasmURL, duckdb_pThreadURL);
-        console.log(duck_db.getVersion());
-        first_result = false;
+        const db = new duckdb.AsyncDuckDB(logger, worker);
+        await db.instantiate(duckdb_wasmURL, duckdb_pThreadURL);
+        console.log(db.getVersion());
+
+        return db;
     }
 
     async function load() {
@@ -133,7 +134,15 @@
             duckdb_pThreadURL = URL.createObjectURL(await pthreadReq.blob());
         }
 
-        await initialze_duckdb();
+        var instance;
+        for (var i=0; i<3; i++) {
+            instance = await make_duckdb();
+            duck_dbs.push({
+                instance: instance,
+                in_using: false,
+                running_main_query: false
+            })
+        }
     }
 
     async function init_idb() {
@@ -196,7 +205,9 @@
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
-        duck_db.registerFileHandle(this.files[0].name, this.files[0]);
+        for(var i=0; i<duck_dbs.length; i++) {
+            duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
+        }
 
         let existTable = false
         for (let i=0; i<internal_tables.length; i++) {
@@ -232,7 +243,9 @@
 
                 if (internal_tables[i].localtable == '') {
                     elapsed = Date.now()
-                    run_only_query(`CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then((res) => {
+                    duck_dbs[0].in_using = true;
+                    run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then(async (res) => {
+                        duck_dbs[0].in_using = false;
                         if (res) {
                             elapsed = (Date.now() - elapsed) / 1000
                             internal_tables[i].tablename = table_name;
@@ -350,40 +363,59 @@
         }
     }
 
-    async function reregister_files() {
+    async function reregister_files(db, create_localtable=false) {
         for (let t of internal_tables) {
-            await duck_db.registerFileHandle(t['name'], t['file_handle']);
-            if (t['tablename'])
-                run_only_query(`CREATE TABLE IF NOT EXISTS '${t["tablename"]}' AS (SELECT * FROM '${t["name"]}')`, preview=false)
+            await db.registerFileHandle(t['name'], t['file_handle']);
+            if (create_localtable && t['tablename'])
+                await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t["tablename"]}' AS (SELECT * FROM '${t["name"]}')`, preview=false)
         }
     }
 
     async function onClickCancel() {
         var loader = document.getElementById("loader");
-        loader.classList.add("show_block");
+        loader.classList.remove("show_block");
+
+        var cancel_button = document.getElementById("cancel_button");
+        cancel_button.classList.remove("show_block");
 
         canvasgrid.data = [];
         var qstatus = document.getElementById('query_status');
         qstatus.innerHTML = `<span class="error_code">Query was canceled </span>`;
 
+        console.log('onClickCancel', first_result);
+
         cancel_query = true;
         if (!first_result) {
-            await duck_db.terminate();
-            await initialze_duckdb();
-            setTimeout(reregister_files(), 200);
+            for(var i=0; i<duck_dbs.length; i++) {
+                if (duck_dbs[i].running_main_query) {
+                    console.log('running_main_query', i)
+                    duck_dbs[i].running_main_query = false;
+                    await duck_dbs[i].instance.terminate();
+                    duck_dbs[i].instance = await make_duckdb();
+                    if (i == 0) 
+                        await reregister_files(duck_dbs[i].instance, true);
+                    else
+                        await reregister_files(duck_dbs[i].instance, false);
+                    duck_dbs[i].in_using = false;
+                    break;
+                }
+            }
         }
-
-        loader.classList.remove("show_block");
-
-        var cancel_button = document.getElementById("cancel_button");
-        cancel_button.classList.remove("show_block");
     }
 
-    async function run_only_query(query, preview=false) {
+    function show_loader() {
+        var loader = document.getElementById("loader");
+        loader.classList.add("show_block");
+        var cancel_button = document.getElementById("cancel_button");
+        cancel_button.classList.add("show_block");
+    }
+
+    async function run_only_query(db, query, preview=false) {
         try {
-            const conn = await duck_db.connect();
+            const conn = await db.connect();
             await conn.runQuery(query);
             await conn.close();
+
             return true;
         } 
         catch (e) {
@@ -398,13 +430,6 @@
         return false;
     } 
 
-    function show_loader() {
-        var loader = document.getElementById("loader");
-        loader.classList.add("show_block");
-        var cancel_button = document.getElementById("cancel_button");
-        cancel_button.classList.add("show_block");
-    }
-
     async function run_query(query, preview=false) {
         first_result = false
 
@@ -414,11 +439,29 @@
         var cancel_button = document.getElementById("cancel_button");
         var loader = document.getElementById("loader");
 
-        var ret = false, data = [];
-
+        var ret = false, data = [], conn, uindex;
         try {
             var elapsed = Date.now();
-            const conn = await duck_db.connect();
+            for(var i=0; i<duck_dbs.length; i++) {
+                if (!duck_dbs[i].in_using) {
+                    uindex = i;
+                    console.log('uindex', uindex);
+                    break;
+                }
+            }
+
+            duck_dbs[uindex].in_using = true;
+            duck_dbs[uindex].running_main_query = true;
+            conn = await duck_dbs[uindex].instance.connect();
+
+            if (uindex != 0) {
+                for (let i=0; i<internal_tables.length; i++) {
+                    if (query.indexOf(`"${internal_tables[i].tablename}"`) > 0) {
+                        query = query.replaceAll(`"${internal_tables[i].tablename}"`, `"${internal_tables[i].name}"`);
+                    }
+                }
+            }
+
             const result = await conn.sendQuery(query);
 
             let batch = (await result.next()).value;
@@ -468,6 +511,10 @@
         }
 
         clearTimeout(tid);
+        
+        duck_dbs[uindex].in_using = false;
+        duck_dbs[uindex].running_main_query = false;
+
         cancel_button.classList.remove("show_block");
         loader.classList.remove("show_block");
         if (cancel_query)
