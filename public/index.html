@@ -71,13 +71,14 @@
         <input id="file-input" type="file" /> -->
         <label for="qfile">Select files:</label>
         <input type="file" id="qfile" name="qfile" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
+        <button onclick="mount_duckdb_dir()">Mount DuckDB Directory</button>
     </div>
     <div id="query_status"></div>
     <div id="grid"></div>
 </div>
 
 <script>
-    const libraryVersion = "0.0.41-dev427.0";
+    const libraryVersion = "0.1.12-dev89.0";
     // const libraryVersion = "0.1.12-dev54.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var duck_dbs = [], i_db, duckdb_wasmURL, duckdb_pThreadURL;
@@ -146,20 +147,20 @@
     }
 
     async function init_idb() {
-        await idb.deleteDB('DuckEval');
-        i_db = await idb.openDB('DuckEval', 2, {
+        await idb.deleteDB('DuckEvalParquets');
+        i_db = await idb.openDB('DuckEvalParquets', 2, {
             upgrade(i_db) {
                 // Create a store of objects
-                const store = i_db.createObjectStore('internal_tables', {
-                    // The 'id' property of the object will be the key.
-                    keyPath: 'id',
-                    // If it isn't explicitly set, create a value by auto incrementing.
-                    autoIncrement: true,
-                });
-                // Create an index on the 'tname' property of the objects.
-                store.createIndex('tname', 'tname');
+                i_db.createObjectStore('parquets');
             },
         });
+
+        const duckdb_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
+
+        const tx = i_db.transaction('parquets', 'readwrite');
+        const store = tx.objectStore('parquets');
+        const val = (await store.get('sales')) || 0;
+        await tx.done;
     }
 
     window.onload = function () { 
@@ -251,7 +252,9 @@
                             internal_tables[i].tablename = table_name;
                             internal_tables[i].localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
                             refresh_internal_table();
-                            update_idb(table_name);
+                            console.log(JSON.stringify(internal_tables))
+                            localStorage.setItem('duckdb_tables', JSON.stringify(internal_tables));
+                            export_parquet(duck_dbs[0].instance, table_name, file.name)
                         }
                     })
                 }
@@ -277,11 +280,6 @@
         }
 
         Sortable.initTable(document.querySelector('#sortable_table'))
-    }
-
-    async function update_idb(table_name) {
-        await i_db.add('internal_tables', {tname: table_name});
-        console.log(await i_db.getAllFromIndex('internal_tables', 'tname'));
     }
 
     function onClickPlay() {
@@ -410,10 +408,41 @@
         cancel_button.classList.add("show_block");
     }
 
+    async function export_parquet(db, table_name, filename) {
+        try {
+            const conn = await db.connect();
+            const results = await db.globFiles('/tmp/*');
+            await conn.query(`COPY ${table_name} TO '/tmp/${table_name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`);
+
+            const parquet_buffer = await db.copyFileToBuffer(`/tmp/${table_name}.parquet`);
+
+            const tx = i_db.transaction('parquets', 'readwrite');
+            const store = tx.objectStore('parquets');
+
+            await store.put(parquet_buffer, table_name);
+            await tx.done;
+
+            console.log(parquet_buffer.length)
+            // await conn.query(`EXPORT DATABASE '/tmp/duckdbexportparquet' (FORMAT PARQUET)`);
+            // const filenames = results.map(file => file.fileName).sort();
+            // const parquet_buffer = await db.copyFileToBuffer('/tmp/duckdbexportparquet/0_foo.parquet');
+            // const load_script_utf8 = await db.copyFileToBuffer('/tmp/duckdbexportparquet/load.sql');
+            // const schema_script_utf8 = await db.copyFileToBuffer('/tmp/duckdbexportparquet/schema.sql');
+            await conn.close();
+
+            return true;
+        } 
+        catch (e) {
+            console.log(e)
+        }
+
+        return false;
+    } 
+
     async function run_only_query(db, query, preview=false) {
         try {
             const conn = await db.connect();
-            await conn.runQuery(query);
+            await conn.query(query);
             await conn.close();
 
             return true;
@@ -454,7 +483,13 @@
             duck_dbs[uindex].running_main_query = true;
             conn = await duck_dbs[uindex].instance.connect();
 
-            if (uindex != 0) {
+            if (uindex == 0) {
+                for (let i=0; i<internal_tables.length; i++) {
+                    if (internal_tables[i].tablename && query.indexOf(`"${internal_tables[i].name}"`) > 0) {
+                        query = query.replaceAll(`"${internal_tables[i].name}"`, `"${internal_tables[i].tablename}"`);
+                    }
+                }
+            } else {
                 for (let i=0; i<internal_tables.length; i++) {
                     if (query.indexOf(`"${internal_tables[i].tablename}"`) > 0) {
                         query = query.replaceAll(`"${internal_tables[i].tablename}"`, `"${internal_tables[i].name}"`);
@@ -462,7 +497,7 @@
                 }
             }
 
-            const result = await conn.sendQuery(query);
+            const result = await conn.send(query);
 
             let batch = (await result.next()).value;
             const field_names = []
@@ -558,6 +593,29 @@
         var td = document.createElement(type)
         td.textContent = value;
         tr.appendChild(td);
+    }
+
+    async function mount_duckdb_dir() {
+        const out = {};
+        const dirHandle = await showDirectoryPicker(); 
+        const parquet_handle = await dirHandle.getDirectoryHandle( 'parquets', { create: true } );
+
+        await handleDirectoryEntry( dirHandle, out );
+        console.log( out );
+    }
+
+    async function handleDirectoryEntry( dirHandle, out ) {
+        for await (const entry of dirHandle.values()) {
+            if (entry.kind === "file"){
+                const file = await entry.getFile();
+                out[ file.name ] = file;
+            }
+            if (entry.kind === "directory") {
+                const newHandle = await dirHandle.getDirectoryHandle( entry.name, { create: false } );
+                const newOut = out[ entry.name ] = {};
+                await handleDirectoryEntry( newHandle, newOut );
+            }
+        }
     }
 </script>
 </html>
