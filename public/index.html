@@ -77,9 +77,23 @@
     <div id="grid"></div>
 </div>
 
+<script type="module">
+    // Import the functions you need from the SDKs you need
+    const firebaseConfig = {
+        apiKey: "apiKey",
+        authDomain: "authDomain",
+        projectId: "projectId",
+        storageBucket: "storageBucket",
+        messagingSenderId: "messagingSenderId",
+        appId: "appId"
+    };
+    const firebase = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-app.js`);
+    window.firebaseApp = firebase.initializeApp(firebaseConfig);
+    window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-storage.js`);
+</script>
+
 <script>
     const libraryVersion = "0.1.12-dev89.0";
-    // const libraryVersion = "0.1.12-dev54.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     var duck_dbs = [], i_db, duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
@@ -87,6 +101,8 @@
     var cancel_query = false, first_result = false;
     var internal_tables = [];
 
+    var f_storage;
+  
     DUCKDB_BUNDLES = ({
         asyncDefault: {
             mainModule: new URL('duckdb.wasm', distURL).toString(),
@@ -144,6 +160,8 @@
                 running_main_query: false
             })
         }
+
+        f_storage = firestorage.getStorage(firebaseApp);
     }
 
     async function init_idb() {
@@ -416,13 +434,23 @@
 
             const parquet_buffer = await db.copyFileToBuffer(`/tmp/${table_name}.parquet`);
 
+            //upload firebase storage
+            const storageRef = firestorage.ref(f_storage, `${table_name}.parquet`);
+            firestorage.uploadBytes(storageRef, parquet_buffer)
+            .then((res) => {
+                console.log('Uploaded an array!', res.metadata);
+            })
+            .catch((error) => {
+                console.log(error);
+            });
+
             const tx = i_db.transaction('parquets', 'readwrite');
             const store = tx.objectStore('parquets');
 
             await store.put(parquet_buffer, table_name);
             await tx.done;
 
-            console.log(parquet_buffer.length)
+            console.log(parquet_buffer.length);
             // await conn.query(`EXPORT DATABASE '/tmp/duckdbexportparquet' (FORMAT PARQUET)`);
             // const filenames = results.map(file => file.fileName).sort();
             // const parquet_buffer = await db.copyFileToBuffer('/tmp/duckdbexportparquet/0_foo.parquet');

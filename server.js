@@ -26,6 +26,8 @@ const dotenv = require('dotenv').config();
 //     }
 // );
 
+require('./test-duckdb');
+
 const app = express();
 
 app.use(express.json());
