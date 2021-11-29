@@ -169,6 +169,7 @@
 
     async function init_idb() {
         // await idb.deleteDB('DuckEvalParquets');
+        // localStorage.removeItem("duckdb_tables"); 
         i_db = await idb.openDB('DuckEvalParquets', 2, {
             upgrade(i_db) {
                 // Create a store of objects
@@ -176,20 +177,22 @@
             },
         });
 
-        // const duckdb_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
-        internal_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
+        const duckdb_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
 
-        const tx = i_db.transaction('parquets', 'readwrite');
-        const store = tx.objectStore('parquets');
-        for (let t of internal_tables) {
-            console.log(t);
-            let parquetbuff = (await store.get(t.hash)) || 0;
-            if (parquetbuff)
+        if (duckdb_tables) {
+            const tx = i_db.transaction('parquets', 'readwrite');
+            const store = tx.objectStore('parquets');
+            for (let t of duckdb_tables) {
+                console.log(t);
+                let parquetbuff = (await store.get(t.hash)) || 0;
+                if (parquetbuff)
                 await duck_dbs[0].instance.registerFileBuffer(`${t.tablename}.parquet`, parquetbuff);
+            }
+            await tx.done;
+    
+            internal_tables = duckdb_tables;
+            refresh_internal_table();
         }
-        refresh_internal_table();
-
-        await tx.done;
     }
 
     window.onload = function () { 
