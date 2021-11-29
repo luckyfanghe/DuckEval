@@ -18,6 +18,7 @@
     <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/sortable.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
 </head>
 
 <body>
@@ -71,7 +72,7 @@
         <input id="file-input" type="file" /> -->
         <label for="qfile">Select files:</label>
         <input type="file" id="qfile" name="qfile" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
-        <button onclick="mount_duckdb_dir()">Mount DuckDB Directory</button>
+        <!-- <button onclick="mount_duckdb_dir()">Mount DuckDB Directory</button> -->
     </div>
     <div id="query_status"></div>
     <div id="grid"></div>
@@ -161,11 +162,13 @@
             })
         }
 
+        init_idb();
+
         f_storage = firestorage.getStorage(firebaseApp);
     }
 
     async function init_idb() {
-        await idb.deleteDB('DuckEvalParquets');
+        // await idb.deleteDB('DuckEvalParquets');
         i_db = await idb.openDB('DuckEvalParquets', 2, {
             upgrade(i_db) {
                 // Create a store of objects
@@ -173,11 +176,19 @@
             },
         });
 
-        const duckdb_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
+        // const duckdb_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
+        internal_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
 
         const tx = i_db.transaction('parquets', 'readwrite');
         const store = tx.objectStore('parquets');
-        const val = (await store.get('sales')) || 0;
+        for (let t of internal_tables) {
+            console.log(t);
+            let parquetbuff = (await store.get(t.hash)) || 0;
+            if (parquetbuff)
+                await duck_dbs[0].instance.registerFileBuffer(`${t.tablename}.parquet`, parquetbuff);
+        }
+        refresh_internal_table();
+
         await tx.done;
     }
 
@@ -218,7 +229,6 @@
         canvasgrid.style.width = '100%';
 
         load();
-        init_idb();
     };
 
     const qfile_input = document.getElementById("qfile");
@@ -243,6 +253,7 @@
                 preview: 'No',
                 tablename: '',
                 localtable: '',
+                hash: '',
                 file_handle: this.files[0]
             });
             refresh_internal_table();
@@ -269,10 +280,11 @@
                             elapsed = (Date.now() - elapsed) / 1000
                             internal_tables[i].tablename = table_name;
                             internal_tables[i].localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
+                            internal_tables[i].hash =  await hashwasm.md5(`${internal_tables[i].name}${internal_tables[i].size}${internal_tables[i].lastmodified}`)
                             refresh_internal_table();
                             console.log(JSON.stringify(internal_tables))
                             localStorage.setItem('duckdb_tables', JSON.stringify(internal_tables));
-                            export_parquet(duck_dbs[0].instance, table_name, file.name)
+                            export_parquet(duck_dbs[0].instance, table_name, file.name, internal_tables[i].hash)
                         }
                     })
                 }
@@ -291,7 +303,7 @@
         for (let t of internal_tables) {
             var tr = document.createElement("tr");
             for (let k in t) {
-                if (k != 'file_handle' && k != 'tablename')
+                if (k != 'file_handle' && k != 'tablename' && k != 'hash')
                     addCell(tr, "td", t[k]);
             }
             tbody.appendChild(tr);
@@ -426,7 +438,7 @@
         cancel_button.classList.add("show_block");
     }
 
-    async function export_parquet(db, table_name, filename) {
+    async function export_parquet(db, table_name, filename, hash) {
         try {
             const conn = await db.connect();
             const results = await db.globFiles('/tmp/*');
@@ -447,7 +459,7 @@
             const tx = i_db.transaction('parquets', 'readwrite');
             const store = tx.objectStore('parquets');
 
-            await store.put(parquet_buffer, table_name);
+            await store.put(parquet_buffer, hash);
             await tx.done;
 
             console.log(parquet_buffer.length);
