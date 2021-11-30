@@ -15,10 +15,13 @@
     <script src="http://codemirror.net/addon/comment/comment.js"></script>
     <script src="http://pure.github.io/pure/libs/pure.js"></script>
     <script src="https://unpkg.com/canvas-datagrid"></script>
-    <script src="./static/js/pgsql_parser.js"></script>
+    <script src="./static/js/pg_query.js"></script>
     <script src="./static/js/sortable.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
+    <script src="./static/js/pgsql_parser.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
+    <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
+    <!-- <script src="./static/js/localforage.js"></script> -->
+    <!-- <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script> -->
 </head>
 
 <body>
@@ -39,7 +42,7 @@
     -- space needed after '--'
     -- use semicolon (;) at the end of multiline query
 
-    SELECT 1 AS 'Result' 
+    SELECT 1 AS "Result"
         UNION SELECT 2
         UNION SELECT 3;
             </textarea>
@@ -96,13 +99,13 @@
 <script>
     const libraryVersion = "0.1.12-dev89.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
-    var duck_dbs = [], i_db, duckdb_wasmURL, duckdb_pThreadURL;
+    var duck_dbs = [], duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
     var canvasgrid;
     var cancel_query = false, first_result = false;
     var internal_tables = [];
 
-    var f_storage;
+    var f_storage, dexie_db;
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -162,37 +165,22 @@
             })
         }
 
-        init_idb();
-
+        init_dexie();
         f_storage = firestorage.getStorage(firebaseApp);
     }
 
-    async function init_idb() {
-        // await idb.deleteDB('DuckEvalParquets');
-        // localStorage.removeItem("duckdb_tables"); 
-        i_db = await idb.openDB('DuckEvalParquets', 2, {
-            upgrade(i_db) {
-                // Create a store of objects
-                i_db.createObjectStore('parquets');
-            },
+    async function init_dexie() {
+        // Dexie.delete('DuckEval');
+        dexie_db = new Dexie('DuckEval');
+
+        // Declare tables, IDs and indexes
+        dexie_db.version(2).stores({
+            duckdb: '++id, name, size, lastmodified, preview, tablename, localtable, hash, parquet'
         });
 
-        const duckdb_tables = JSON.parse(localStorage.getItem('duckdb_tables'));
-
-        if (duckdb_tables) {
-            const tx = i_db.transaction('parquets', 'readwrite');
-            const store = tx.objectStore('parquets');
-            for (let t of duckdb_tables) {
-                console.log(t);
-                let parquetbuff = (await store.get(t.hash)) || 0;
-                if (parquetbuff)
-                await duck_dbs[0].instance.registerFileBuffer(`${t.tablename}.parquet`, parquetbuff);
-            }
-            await tx.done;
-    
-            internal_tables = duckdb_tables;
-            refresh_internal_table();
-        }
+        dexie_db.duckdb.each(parquet => {
+            console.log(parquet.name);
+        });
     }
 
     window.onload = function () { 
