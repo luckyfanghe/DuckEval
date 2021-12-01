@@ -28,9 +28,18 @@ function load_data_with_sortabletable(rows) {
     Sortable.initTable(document.querySelector('#sortable_table'))
 }
 
-function addCell(tr, type, value) {
+function addCell(tr, type, value, onclick=null, img_url=null) {
     var td = document.createElement(type)
     td.textContent = value;
+    if (onclick) {
+        td.onclick = onclick;
+    }
+    if (img_url) {
+        var img = document.createElement('img'); 
+        img.src = '/static/images/preview.svg'; 
+        img.style = "width: 16px; cursor: pointer;";
+        td.appendChild(img);
+    }
     tr.appendChild(td);
 }
 

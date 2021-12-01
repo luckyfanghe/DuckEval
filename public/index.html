@@ -52,6 +52,7 @@
             <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
                 <thead id="thead">
                     <tr>
+                        <th></th>
                         <th>Name</th>
                         <th>Size</th>
                         <th>FileLastModified</th>
@@ -280,6 +281,10 @@
         }
     }
 
+    function onClickPreview() {
+        run_query(`SELECT * FROM '${internal_tables[this.parentNode.id].table.name}' LIMIT 100`, true);
+    }
+
     function refresh_internal_table() {
         var tbody = document.getElementById("tbody");
 
@@ -287,13 +292,19 @@
             tbody.removeChild(tbody.lastChild);
         }
 
-        for (let t of internal_tables) {
-            var tr = document.createElement("tr");
+        for (let k in internal_tables) {
+            let t = internal_tables[k]
+            let tr = document.createElement("tr");
+            if (t.table.preview) 
+                addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
+            else
+                addCell(tr, "td", "");
             addCell(tr, "td", t.file.name);
             addCell(tr, "td", t.file.size);
             addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
             if (t.table.preview) addCell(tr, "td", t.table.preview);
             if (t.table.localtable) addCell(tr, "td", t.table.localtable);
+            tr.id = k;
             tbody.appendChild(tr);
         }
 
