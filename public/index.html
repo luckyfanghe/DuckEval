@@ -18,6 +18,7 @@
     <script src="./static/js/pg_query.js"></script>
     <script src="./static/js/sortable.js"></script>
     <script src="./static/js/pgsql_parser.js"></script>
+    <script src="./static/js/script.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
     <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
     <!-- <script src="./static/js/localforage.js"></script> -->
@@ -175,12 +176,19 @@
 
         // Declare tables, IDs and indexes
         dexie_db.version(2).stores({
-            duckdb: '++id, name, size, lastmodified, preview, tablename, localtable, hash, parquet'
+            duckdb: '++id, file, table, parquet'
         });
 
-        dexie_db.duckdb.each(parquet => {
-            console.log(parquet.name);
-        });
+        await dexie_db.duckdb.each(item => {
+            internal_tables.push(item);
+            if (item.parquet && item.parquet.blob.length > 0) {
+                for(let i=0; i<duck_dbs.length; i++) {
+                    duck_dbs[i].instance.registerFileBuffer(item.parquet.name, item.parquet.blob);
+                }
+                run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${item.table.name}' AS (SELECT * FROM '${item.parquet.name}')`);
+            }
+        })
+        refresh_internal_table();
     }
 
     window.onload = function () { 
@@ -225,60 +233,48 @@
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
-        for(var i=0; i<duck_dbs.length; i++) {
-            duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
-        }
-
         let existTable = false
         for (let i=0; i<internal_tables.length; i++) {
-            if (internal_tables[i].name == this.files[0].name) {
+            if (internal_tables[i].file.name == this.files[0].name) {
                 existTable = true;
                 break;
             }
         }
         if (!existTable) {
             internal_tables.push({
-                name: this.files[0].name,
-                size: this.files[0].size,
-                lastmodified: new Date(this.files[0].lastModified).toUTCString(),
-                preview: 'No',
-                tablename: '',
-                localtable: '',
-                hash: '',
-                file_handle: this.files[0]
+                table: {},
+                file: this.files[0]
             });
             refresh_internal_table();
+            for(let i=0; i<duck_dbs.length; i++) {
+                duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
+            }
+            preview_time = Date.now()
+            let preview = await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
+            setTimeout(background_process(this.files[0].name, preview, (Date.now()-preview_time)/1000), 100);
         }
-
-        preview_time = Date.now()
-        let preview = await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
-        setTimeout(background_process(this.files[0], preview, (Date.now()-preview_time)/1000), 100);
     }
 
-    function background_process(file, preview, elapsed) {
-        const table_name = file.name.split('.')[0].toLowerCase();
+    function background_process(file_name, preview, elapsed) {
+        const table_name = file_name.split('.')[0].toLowerCase();
         for (let i=0; i<internal_tables.length; i++) {
-            if (internal_tables[i].name == file.name) {
-                internal_tables[i].preview = preview ? `Yes (${elapsed.toFixed(2)}s)`: 'No';
+            if (internal_tables[i].file.name == file_name) {
+                internal_tables[i].table.preview = preview ? `Yes (${elapsed.toFixed(2)}s)`: 'No';
                 refresh_internal_table();
 
-                if (internal_tables[i].localtable == '') {
-                    elapsed = Date.now()
-                    duck_dbs[0].in_using = true;
-                    run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file.name}')`, true).then(async (res) => {
-                        duck_dbs[0].in_using = false;
-                        if (res) {
-                            elapsed = (Date.now() - elapsed) / 1000
-                            internal_tables[i].tablename = table_name;
-                            internal_tables[i].localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
-                            internal_tables[i].hash =  await hashwasm.md5(`${internal_tables[i].name}${internal_tables[i].size}${internal_tables[i].lastmodified}`)
-                            refresh_internal_table();
-                            console.log(JSON.stringify(internal_tables))
-                            localStorage.setItem('duckdb_tables', JSON.stringify(internal_tables));
-                            export_parquet(duck_dbs[0].instance, table_name, file.name, internal_tables[i].hash)
-                        }
-                    })
-                }
+                elapsed = Date.now()
+                duck_dbs[0].in_using = true;
+                run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file_name}')`, true).then(async (res) => {
+                    if (res) {
+                        elapsed = (Date.now() - elapsed) / 1000
+                        internal_tables[i].table.name = table_name;
+                        internal_tables[i].table.localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
+                        internal_tables[i].file.hash =  await hashwasm.md5(`${internal_tables[i].file.name}${internal_tables[i].file.size}${internal_tables[i].file.lastModified}`);
+                        refresh_internal_table();
+                        export_parquet(duck_dbs[0].instance, internal_tables[i])
+                    }
+                    duck_dbs[0].in_using = false;
+                })
                 break;
             }
         }
@@ -293,10 +289,11 @@
 
         for (let t of internal_tables) {
             var tr = document.createElement("tr");
-            for (let k in t) {
-                if (k != 'file_handle' && k != 'tablename' && k != 'hash')
-                    addCell(tr, "td", t[k]);
-            }
+            addCell(tr, "td", t.file.name);
+            addCell(tr, "td", t.file.size);
+            addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
+            if (t.table.preview) addCell(tr, "td", t.table.preview);
+            if (t.table.localtable) addCell(tr, "td", t.table.localtable);
             tbody.appendChild(tr);
         }
 
@@ -311,7 +308,7 @@
             run_query(selected.replaceAll('#', '-- '));
             return;
         }
-        
+
         let query = sql_editer.getValue();
         let ast, sql;
         query = query.replaceAll('#', '-- ');
@@ -384,9 +381,15 @@
 
     async function reregister_files(db, create_localtable=false) {
         for (let t of internal_tables) {
-            await db.registerFileHandle(t['name'], t['file_handle']);
-            if (create_localtable && t['tablename'])
-                await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t["tablename"]}' AS (SELECT * FROM '${t["name"]}')`, preview=false)
+            if (t.parquet) {
+                await db.registerFileBuffer(t.parquet.name, t.parquet.blob);
+                if (create_localtable)
+                    await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.parquet.name}')`, preview=false)
+            } else {
+                await db.registerFileHandle(t.file.name, t.file);
+                if (create_localtable && t.table && t.table.name)
+                    await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.file.name}')`, preview=false)
+            }
         }
     }
 
@@ -405,7 +408,7 @@
 
         cancel_query = true;
         if (!first_result) {
-            for(var i=0; i<duck_dbs.length; i++) {
+            for(let i=0; i<duck_dbs.length; i++) {
                 if (duck_dbs[i].running_main_query) {
                     console.log('running_main_query', i)
                     duck_dbs[i].running_main_query = false;
@@ -429,16 +432,22 @@
         cancel_button.classList.add("show_block");
     }
 
-    async function export_parquet(db, table_name, filename, hash) {
+    async function export_parquet(db, data) {
         try {
             const conn = await db.connect();
             const results = await db.globFiles('/tmp/*');
-            await conn.query(`COPY ${table_name} TO '/tmp/${table_name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`);
+            await conn.query(`COPY ${data.table.name} TO '/tmp/${data.table.name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`);
+            const parquet_buffer = await db.copyFileToBuffer(`/tmp/${data.table.name}.parquet`);
+            await conn.close();
 
-            const parquet_buffer = await db.copyFileToBuffer(`/tmp/${table_name}.parquet`);
+            data.parquet = {
+                name: `${data.table.name}.parquet`,
+                blob: parquet_buffer
+            }
+            await dexie_db.duckdb.add(data);
 
             //upload firebase storage
-            const storageRef = firestorage.ref(f_storage, `${table_name}.parquet`);
+            const storageRef = firestorage.ref(f_storage, data.parquet.name);
             firestorage.uploadBytes(storageRef, parquet_buffer)
             .then((res) => {
                 console.log('Uploaded an array!', res.metadata);
@@ -446,20 +455,6 @@
             .catch((error) => {
                 console.log(error);
             });
-
-            const tx = i_db.transaction('parquets', 'readwrite');
-            const store = tx.objectStore('parquets');
-
-            await store.put(parquet_buffer, hash);
-            await tx.done;
-
-            console.log(parquet_buffer.length);
-            // await conn.query(`EXPORT DATABASE '/tmp/duckdbexportparquet' (FORMAT PARQUET)`);
-            // const filenames = results.map(file => file.fileName).sort();
-            // const parquet_buffer = await db.copyFileToBuffer('/tmp/duckdbexportparquet/0_foo.parquet');
-            // const load_script_utf8 = await db.copyFileToBuffer('/tmp/duckdbexportparquet/load.sql');
-            // const schema_script_utf8 = await db.copyFileToBuffer('/tmp/duckdbexportparquet/schema.sql');
-            await conn.close();
 
             return true;
         } 
@@ -502,7 +497,7 @@
         var ret = false, data = [], conn, uindex;
         try {
             var elapsed = Date.now();
-            for(var i=0; i<duck_dbs.length; i++) {
+            for(let i=0; i<duck_dbs.length; i++) {
                 if (!duck_dbs[i].in_using) {
                     uindex = i;
                     console.log('uindex', uindex);
@@ -516,14 +511,14 @@
 
             if (uindex == 0) {
                 for (let i=0; i<internal_tables.length; i++) {
-                    if (internal_tables[i].tablename && query.indexOf(`"${internal_tables[i].name}"`) > 0) {
-                        query = query.replaceAll(`"${internal_tables[i].name}"`, `"${internal_tables[i].tablename}"`);
+                    if (internal_tables[i].table.name && query.indexOf(`"${internal_tables[i].file.name}"`) > 0) {
+                        query = query.replaceAll(`"${internal_tables[i].file.name}"`, `"${internal_tables[i].table.name}"`);
                     }
                 }
             } else {
                 for (let i=0; i<internal_tables.length; i++) {
-                    if (query.indexOf(`"${internal_tables[i].tablename}"`) > 0) {
-                        query = query.replaceAll(`"${internal_tables[i].tablename}"`, `"${internal_tables[i].name}"`);
+                    if (query.indexOf(`"${internal_tables[i].table.name}"`) > 0) {
+                        query = query.replaceAll(`"${internal_tables[i].table.name}"`, `"${internal_tables[i].file.name}"`);
                     }
                 }
             }
@@ -591,41 +586,6 @@
         return ret;
     }
 
-    function load_data_with_sortabletable(rows) {
-        var thead = document.getElementById("thead");
-        var tbody = document.getElementById("tbody");
-
-        while (thead.hasChildNodes()) {
-            thead.removeChild(thead.lastChild);
-        }
-        while (tbody.hasChildNodes()) {
-            tbody.removeChild(tbody.lastChild);
-        }
-
-        var header_row = document.createElement("tr");
-        var field_names = []
-        for (let field of rows.schema.fields) {
-            addCell(header_row, "th", `${field.name}`);
-            field_names.push(field.name)
-        }
-        thead.appendChild(header_row);
-
-        for (let row of rows) {
-            var tr = document.createElement("tr");
-            for (let f of field_names) {
-                addCell(tr, "td", row[f]);
-            }
-            tbody.appendChild(tr);
-        }
-
-        Sortable.initTable(document.querySelector('#sortable_table'))
-    }
-    function addCell(tr, type, value) {
-        var td = document.createElement(type)
-        td.textContent = value;
-        tr.appendChild(td);
-    }
-
     async function mount_duckdb_dir() {
         const out = {};
         const dirHandle = await showDirectoryPicker(); 
@@ -633,20 +593,6 @@
 
         await handleDirectoryEntry( dirHandle, out );
         console.log( out );
-    }
-
-    async function handleDirectoryEntry( dirHandle, out ) {
-        for await (const entry of dirHandle.values()) {
-            if (entry.kind === "file"){
-                const file = await entry.getFile();
-                out[ file.name ] = file;
-            }
-            if (entry.kind === "directory") {
-                const newHandle = await dirHandle.getDirectoryHandle( entry.name, { create: false } );
-                const newOut = out[ entry.name ] = {};
-                await handleDirectoryEntry( newHandle, newOut );
-            }
-        }
     }
 </script>
 </html>

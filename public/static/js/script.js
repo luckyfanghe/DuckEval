@@ -52,7 +52,7 @@ async function init_idb(store_name) {
         for (let t of duckdb_tables) {
             let parquetbuff = (await store.get(t.hash)) || 0;
             if (parquetbuff)
-            await duck_dbs[0].instance.registerFileBuffer(`${t.tablename}.parquet`, parquetbuff);
+                await duck_dbs[0].instance.registerFileBuffer(`${t.tablename}.parquet`, parquetbuff);
         }
         await tx.done;
 
@@ -63,7 +63,7 @@ async function init_idb(store_name) {
     return i_db;
 }
 
-function save_parquet(i_db, store_name, key, buff) {
+async function save_parquet(i_db, store_name, key, buff) {
     const tx = i_db.transaction(store_name, 'readwrite');
     const store = tx.objectStore(store_name);
 
@@ -93,4 +93,18 @@ function init_localforage() {
     }).catch(function(err) {
         console.log(err);
     });
+}
+
+async function handleDirectoryEntry( dirHandle, out ) {
+    for await (const entry of dirHandle.values()) {
+        if (entry.kind === "file"){
+            const file = await entry.getFile();
+            out[ file.name ] = file;
+        }
+        if (entry.kind === "directory") {
+            const newHandle = await dirHandle.getDirectoryHandle( entry.name, { create: false } );
+            const newOut = out[ entry.name ] = {};
+            await handleDirectoryEntry( newHandle, newOut );
+        }
+    }
 }
