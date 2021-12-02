@@ -57,7 +57,8 @@
                         <th>Size</th>
                         <th>FileLastModified</th>
                         <th>PreviewGenerated</th>
-                        <th>Local Table</th>
+                        <th>LocalTable</th>
+                        <th>ExportElapsed</th>
                     </tr>
                 </thead>
                 <tbody id="tbody">
@@ -304,6 +305,7 @@
             addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
             if (t.table.preview) addCell(tr, "td", t.table.preview);
             if (t.table.localtable) addCell(tr, "td", t.table.localtable);
+            if (t.table.gcs_elapsed) addCell(tr, "td", t.parquet.elapsed + " / " + t.table.gcs_elapsed + " s");
             tr.id = k;
             tbody.appendChild(tr);
         }
@@ -447,21 +449,26 @@
         try {
             const conn = await db.connect();
             const results = await db.globFiles('/tmp/*');
+
+            let elapsed = Date.now();
             await conn.query(`COPY ${data.table.name} TO '/tmp/${data.table.name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`);
             const parquet_buffer = await db.copyFileToBuffer(`/tmp/${data.table.name}.parquet`);
             await conn.close();
 
             data.parquet = {
                 name: `${data.table.name}.parquet`,
-                blob: parquet_buffer
+                blob: parquet_buffer,
+                elapsed: ((Date.now() - elapsed) / 1000).toFixed(2)
             }
             await dexie_db.duckdb.add(data);
 
             //upload firebase storage
             const storageRef = firestorage.ref(f_storage, data.parquet.name);
+            elapsed = Date.now();
             firestorage.uploadBytes(storageRef, parquet_buffer)
             .then((res) => {
-                console.log('Uploaded an array!', res.metadata);
+                data.table.gcs_elapsed = ((Date.now() - elapsed) / 1000).toFixed(2);
+                refresh_internal_table()
             })
             .catch((error) => {
                 console.log(error);

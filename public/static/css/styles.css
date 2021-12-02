@@ -30,7 +30,7 @@
 }
 
 .file_browser_container {
-    margin: 20px 10px;
+    margin: 12px 10px;
 }
 
 /* 
@@ -59,17 +59,21 @@
 }
 
 .sql_editer_container {
-    min-height: 320px;
+    min-height: 250px;
+}
+
+.CodeMirror {
+    height: 240px !important;
 }
 
 .left_panel {
-    width: 50%;
+    width: 40%;
     float: left;
     border-right: 1px solid #dddddd;
 }
 
 .right_panel {
-    width: 48%;
+    width: 58%;
     float: right;
 }
 
