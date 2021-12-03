@@ -20,7 +20,7 @@
     <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/script.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
-    <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
+    <!-- <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script> -->
     <!-- <script src="./static/js/localforage.js"></script> -->
     <!-- <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script> -->
 </head>
@@ -94,9 +94,11 @@
         messagingSenderId: "messagingSenderId",
         appId: "appId"
     };
+    
     const firebase = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-app.js`);
     window.firebaseApp = firebase.initializeApp(firebaseConfig);
     window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-storage.js`);
+    window.firedb = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-database.js`);
 </script>
 
 <script>
@@ -108,7 +110,7 @@
     var cancel_query = false, first_result = false;
     var internal_tables = [];
 
-    var f_storage, dexie_db;
+    var f_storage, f_db;
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -168,29 +170,23 @@
             })
         }
 
-        init_dexie();
-        f_storage = firestorage.getStorage(firebaseApp);
-    }
+        f_db = firedb.getDatabase(firebaseApp);
 
-    async function init_dexie() {
-        // Dexie.delete('DuckEval');
-        dexie_db = new Dexie('DuckEval');
-
-        // Declare tables, IDs and indexes
-        dexie_db.version(2).stores({
-            duckdb: '++id, file, table, parquet'
+        const dbRef = firedb.ref(f_db);
+        firedb.get(firedb.child(dbRef, 'duckdb')).then((snapshot) => {
+            if (snapshot.exists()) {
+                data = snapshot.val()
+                for (k in data)
+                    internal_tables.push(data[k]);
+                refresh_internal_table();
+            } else {
+                console.log("No data available");
+            }
+        }).catch((error) => {
+            console.error(error);
         });
 
-        await dexie_db.duckdb.each(item => {
-            internal_tables.push(item);
-            if (item.parquet && item.parquet.blob.length > 0) {
-                for(let i=0; i<duck_dbs.length; i++) {
-                    duck_dbs[i].instance.registerFileBuffer(item.parquet.name, item.parquet.blob);
-                }
-                run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${item.table.name}' AS (SELECT * FROM '${item.parquet.name}')`);
-            }
-        })
-        refresh_internal_table();
+        f_storage = firestorage.getStorage(firebaseApp);
     }
 
     window.onload = function () { 
@@ -244,8 +240,13 @@
         }
         if (!existTable) {
             internal_tables.push({
+                file: {
+                    name: this.files[0].name,
+                    size: this.files[0].size,
+                    lastModified: this.files[0].lastModified,
+                    handle: this.files[0]
+                },
                 table: {},
-                file: this.files[0]
             });
             refresh_internal_table();
             for(let i=0; i<duck_dbs.length; i++) {
@@ -398,8 +399,8 @@
                 await db.registerFileBuffer(t.parquet.name, t.parquet.blob);
                 if (create_localtable)
                     await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.parquet.name}')`, preview=false)
-            } else {
-                await db.registerFileHandle(t.file.name, t.file);
+            } else if (t.file.handle) {
+                await db.registerFileHandle(t.file.name, t.file.handle);
                 if (create_localtable && t.table && t.table.name)
                     await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.file.name}')`, preview=false)
             }
@@ -457,10 +458,11 @@
 
             data.parquet = {
                 name: `${data.table.name}.parquet`,
-                blob: parquet_buffer,
                 elapsed: ((Date.now() - elapsed) / 1000).toFixed(2)
             }
-            await dexie_db.duckdb.add(data);
+
+            let dict = internal_tables.reduce((a, x) => ({...a, [x.file.hash]: x}), {})
+            firedb.set(firedb.ref(f_db, 'duckdb'), dict);
 
             //upload firebase storage
             const storageRef = firestorage.ref(f_storage, data.parquet.name);

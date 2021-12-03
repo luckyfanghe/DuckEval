@@ -43,6 +43,27 @@ function addCell(tr, type, value, onclick=null, img_url=null) {
     tr.appendChild(td);
 }
 
+async function init_dexie() {
+    // Dexie.delete('DuckEval');
+    var dexie_db = new Dexie('DuckEval');
+
+    // Declare tables, IDs and indexes
+    dexie_db.version(2).stores({
+        duckdb: '++id, file, table, parquet'
+    });
+
+    await dexie_db.duckdb.each(item => {
+        internal_tables.push(item);
+        if (item.parquet && item.parquet.blob.length > 0) {
+            for(let i=0; i<duck_dbs.length; i++) {
+                duck_dbs[i].instance.registerFileBuffer(item.parquet.name, item.parquet.blob);
+            }
+            run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${item.table.name}' AS (SELECT * FROM '${item.parquet.name}')`);
+        }
+    })
+    refresh_internal_table();
+}
+
 async function init_idb(store_name) {
     // await idb.deleteDB('DuckEvalParquets');
     // localStorage.removeItem("duckdb_tables"); 
