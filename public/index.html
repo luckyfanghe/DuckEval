@@ -20,9 +20,9 @@
     <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/script.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
+    <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
     <!-- <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script> -->
     <!-- <script src="./static/js/localforage.js"></script> -->
-    <!-- <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script> -->
 </head>
 
 <body>
@@ -58,7 +58,7 @@
                         <th>FileLastModified</th>
                         <th>PreviewGenerated</th>
                         <th>LocalTable</th>
-                        <th>ExportElapsed</th>
+                        <th>GCSElapsed</th>
                     </tr>
                 </thead>
                 <tbody id="tbody">
@@ -104,13 +104,14 @@
 <script>
     const libraryVersion = "0.1.12-dev89.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
+    const TABLE_ICON_NONE = 0, TABLE_ICON_PREVIEW = 1, TABLE_ICON_REFRESH = 2;
     var duck_dbs = [], duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
     var canvasgrid;
     var cancel_query = false, first_result = false;
     var internal_tables = [], parquet_buffer = {};
 
-    var f_storage, f_db;
+    var f_storage, f_db, i_db;
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -170,17 +171,42 @@
             })
         }
 
-        f_db = firedb.getDatabase(firebaseApp);
+        // await idb.deleteDB('DuckParquet');
+        i_db = await idb.openDB('DuckParquet', 2, {
+            upgrade(i_db) {
+                // Create a store of objects
+                i_db.createObjectStore('parquets');
+            },
+        });
 
+        f_db = firedb.getDatabase(firebaseApp);
         const dbRef = firedb.ref(f_db);
-        firedb.get(firedb.child(dbRef, 'duckdb')).then((snapshot) => {
+        firedb.get(firedb.child(dbRef, 'duckdb')).then(async (snapshot) => {
             if (snapshot.exists()) {
+                const tx = i_db.transaction('parquets', 'readwrite');
+                const store = tx.objectStore('parquets');
+
                 data = snapshot.val()
                 for (k in data) {
-                    data[k].table.preview = ' ';
-                    data[k].table.localtable = '';
+                    let parquetbuff = (await store.get(data[k].file.hash)) || 0;
+                    if (parquetbuff) {
+                        let parquet_name = data[k].parquet.name
+                        parquet_buffer[parquet_name] = parquetbuff;
+                        for (let i=0; i<duck_dbs.length; i++) {
+                            await duck_dbs[i].instance.registerFileBuffer(parquet_name, parquetbuff);
+                        }
+                        await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${data[k].table.name}' AS (SELECT * FROM '${parquet_name}')`);
+                        data[k].table.icon = TABLE_ICON_PREVIEW;
+                    } else {
+                        data[k].table.icon = TABLE_ICON_REFRESH;
+                        // data[k].table.preview = '';
+                        data[k].table.localtable = '';
+                        data[k].table.gcs_elapsed = '';
+                        data[k].parquet.elapsed = '';
+                    }
                     internal_tables.push(data[k]);
                 }
+
                 refresh_internal_table();
             } else {
                 console.log("No data available");
@@ -249,7 +275,9 @@
                     lastModified: this.files[0].lastModified,
                     handle: this.files[0]
                 },
-                table: {},
+                table: {
+                    icon: TABLE_ICON_NONE
+                },
             });
             refresh_internal_table();
             for(let i=0; i<duck_dbs.length; i++) {
@@ -273,6 +301,7 @@
                 run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file_name}')`, true).then(async (res) => {
                     if (res) {
                         elapsed = (Date.now() - elapsed) / 1000
+                        internal_tables[i].table.icon = TABLE_ICON_PREVIEW;
                         internal_tables[i].table.name = table_name;
                         internal_tables[i].table.localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
                         internal_tables[i].file.hash =  await hashwasm.md5(`${internal_tables[i].file.name}${internal_tables[i].file.size}${internal_tables[i].file.lastModified}`);
@@ -304,7 +333,8 @@
                     await duck_dbs[i].instance.registerFileBuffer(parquet_name, parquet_buffer[parquet_name]);
                 }
                 elapsed = (Date.now() - elapsed) / 1000;
-                internal_tables[id].table.preview = `Yes (${elapsed.toFixed(2)}s)`;
+                internal_tables[id].table.gcs_elapsed = `${elapsed.toFixed(2)}`;
+                internal_tables[id].table.icon = TABLE_ICON_PREVIEW;
                 refresh_internal_table();
 
                 elapsed = Date.now();
@@ -329,20 +359,25 @@
         for (let k in internal_tables) {
             let t = internal_tables[k]
             let tr = document.createElement("tr");
-            if (t.table.preview) {
-                if (parquet_buffer[t.parquet.name])
+            if (t.table.icon == TABLE_ICON_NONE) {
+                addCell(tr, "td", "");
+            } else {
+                if (t.table.icon == TABLE_ICON_PREVIEW)
                     addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
                 else
                     addCell(tr, "td", "", onClickPreview, "/static/images/refresh.svg");
             }
-            else
-                addCell(tr, "td", "");
             addCell(tr, "td", t.file.name);
             addCell(tr, "td", t.file.size);
             addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
             if (t.table.preview) addCell(tr, "td", t.table.preview);
             if (t.table.localtable) addCell(tr, "td", t.table.localtable);
-            if (t.table.gcs_elapsed) addCell(tr, "td", t.parquet.elapsed + " / " + t.table.gcs_elapsed + " s");
+            if (t.table.gcs_elapsed) {
+                if (t.parquet.elapsed) 
+                    addCell(tr, "td", t.parquet.elapsed + " / " + t.table.gcs_elapsed + " s");
+                else
+                    addCell(tr, "td", t.table.gcs_elapsed + " s");
+            }
             tr.id = k;
             tbody.appendChild(tr);
         }
@@ -508,11 +543,19 @@
             firestorage.uploadBytes(storageRef, buff)
             .then((res) => {
                 data.table.gcs_elapsed = ((Date.now() - elapsed) / 1000).toFixed(2);
-                refresh_internal_table()
+                refresh_internal_table();
+                let dict = internal_tables.reduce((a, x) => ({...a, [x.file.hash]: x}), {})
+                firedb.set(firedb.ref(f_db, 'duckdb'), dict);
             })
             .catch((error) => {
                 console.log(error);
             });
+
+            const tx = i_db.transaction('parquets', 'readwrite');
+            const store = tx.objectStore('parquets');
+
+            await store.put(buff, data.file.hash);
+            await tx.done;
 
             return true;
         } 
