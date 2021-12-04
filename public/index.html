@@ -95,10 +95,10 @@
         appId: "appId"
     };
     
-    const firebase = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-app.js`);
+    const firebase = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-app.js`);
     window.firebaseApp = firebase.initializeApp(firebaseConfig);
-    window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-storage.js`);
-    window.firedb = await import(`https://www.gstatic.com/firebasejs/9.5.0/firebase-database.js`);
+    window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-storage.js`);
+    window.firedb = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-database.js`);
 </script>
 
 <script>
@@ -108,7 +108,7 @@
     var sql_editer, sql_parser;
     var canvasgrid;
     var cancel_query = false, first_result = false;
-    var internal_tables = [];
+    var internal_tables = [], parquet_buffer = {};
 
     var f_storage, f_db;
   
@@ -176,16 +176,19 @@
         firedb.get(firedb.child(dbRef, 'duckdb')).then((snapshot) => {
             if (snapshot.exists()) {
                 data = snapshot.val()
-                for (k in data)
+                for (k in data) {
+                    data[k].table.preview = ' ';
+                    data[k].table.localtable = '';
                     internal_tables.push(data[k]);
+                }
                 refresh_internal_table();
             } else {
                 console.log("No data available");
             }
         }).catch((error) => {
-            console.error(error);
+            console.log(error);
         });
-
+        
         f_storage = firestorage.getStorage(firebaseApp);
     }
 
@@ -284,7 +287,36 @@
     }
 
     function onClickPreview() {
-        run_query(`SELECT * FROM '${internal_tables[this.parentNode.id].table.name}' LIMIT 100`, true);
+        const id = this.parentNode.id;
+        const parquet_name = internal_tables[id].parquet.name;
+        const table_name = internal_tables[id].table.name;
+        let elapsed = Date.now();
+        if (parquet_buffer[parquet_name]) {
+            run_query(`SELECT * FROM '${parquet_name}' LIMIT 100`, true);
+        } else {
+            this.children[0].src = "/static/images/reload.gif";
+            const starsRef = firestorage.ref(f_storage, parquet_name);
+            firestorage.getDownloadURL(starsRef)
+            .then(async (url) => {
+                const res = await fetch(url);
+                parquet_buffer[parquet_name] = new Uint8Array(await res.arrayBuffer());
+                for (let i=0; i<duck_dbs.length; i++) {
+                    await duck_dbs[i].instance.registerFileBuffer(parquet_name, parquet_buffer[parquet_name]);
+                }
+                elapsed = (Date.now() - elapsed) / 1000;
+                internal_tables[id].table.preview = `Yes (${elapsed.toFixed(2)}s)`;
+                refresh_internal_table();
+
+                elapsed = Date.now();
+                await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${parquet_name}')`);
+                elapsed = (Date.now() - elapsed) / 1000;
+                internal_tables[id].table.localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
+                refresh_internal_table();
+            })
+            .catch((error) => {
+                console.log(error);
+            });
+        }
     }
 
     function refresh_internal_table() {
@@ -297,8 +329,12 @@
         for (let k in internal_tables) {
             let t = internal_tables[k]
             let tr = document.createElement("tr");
-            if (t.table.preview) 
-                addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
+            if (t.table.preview) {
+                if (parquet_buffer[t.parquet.name])
+                    addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
+                else
+                    addCell(tr, "td", "", onClickPreview, "/static/images/refresh.svg");
+            }
             else
                 addCell(tr, "td", "");
             addCell(tr, "td", t.file.name);
@@ -395,8 +431,8 @@
 
     async function reregister_files(db, create_localtable=false) {
         for (let t of internal_tables) {
-            if (t.parquet) {
-                await db.registerFileBuffer(t.parquet.name, t.parquet.blob);
+            if (t.parquet && parquet_buffer[t.parquet.name]) {
+                await db.registerFileBuffer(t.parquet.name, parquet_buffer[t.parquet.name]);
                 if (create_localtable)
                     await run_only_query(db, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.parquet.name}')`, preview=false)
             } else if (t.file.handle) {
@@ -453,7 +489,7 @@
 
             let elapsed = Date.now();
             await conn.query(`COPY ${data.table.name} TO '/tmp/${data.table.name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`);
-            const parquet_buffer = await db.copyFileToBuffer(`/tmp/${data.table.name}.parquet`);
+            const buff = await db.copyFileToBuffer(`/tmp/${data.table.name}.parquet`);
             await conn.close();
 
             data.parquet = {
@@ -461,13 +497,15 @@
                 elapsed: ((Date.now() - elapsed) / 1000).toFixed(2)
             }
 
+            parquet_buffer[data.parquet.name] = buff;
+
             let dict = internal_tables.reduce((a, x) => ({...a, [x.file.hash]: x}), {})
             firedb.set(firedb.ref(f_db, 'duckdb'), dict);
 
             //upload firebase storage
             const storageRef = firestorage.ref(f_storage, data.parquet.name);
             elapsed = Date.now();
-            firestorage.uploadBytes(storageRef, parquet_buffer)
+            firestorage.uploadBytes(storageRef, buff)
             .then((res) => {
                 data.table.gcs_elapsed = ((Date.now() - elapsed) / 1000).toFixed(2);
                 refresh_internal_table()

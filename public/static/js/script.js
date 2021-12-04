@@ -36,7 +36,7 @@ function addCell(tr, type, value, onclick=null, img_url=null) {
     }
     if (img_url) {
         var img = document.createElement('img'); 
-        img.src = '/static/images/preview.svg'; 
+        img.src = img_url; 
         img.style = "width: 16px; cursor: pointer;";
         td.appendChild(img);
     }
