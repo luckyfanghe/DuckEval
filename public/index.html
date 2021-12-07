@@ -140,6 +140,14 @@
     }
 
     async function load() {
+        // await idb.deleteDB('DuckParquet');
+        i_db = await idb.openDB('DuckParquet', 2, {
+            upgrade(i_db) {
+                // Create a store of objects
+                i_db.createObjectStore('parquets');
+            },
+        });
+
         duckdb = await import(`https://cdn.skypack.dev/@duckdb/duckdb-wasm@${libraryVersion}`);
         bundle = await duckdb.selectBundle(DUCKDB_BUNDLES);
 
@@ -149,9 +157,27 @@
         let workerScriptBlob = new Blob([workerScript], { type: 'application/javascript' });
         workerURL = URL.createObjectURL(workerScriptBlob);
 
-        // download WASM
-        let wasmReq = await fetch(bundle.mainModule);
-        duckdb_wasmURL = URL.createObjectURL(await wasmReq.blob());
+        let duckdb_version = localStorage.getItem('duckdb_version');
+        let blob = 0;
+        if (duckdb_version == libraryVersion) {
+            const tx = i_db.transaction('parquets', 'readwrite');
+            const store = tx.objectStore('parquets');
+            blob = (await store.get('duckdb_wasm')) || 0;
+            duckdb_wasmURL = URL.createObjectURL(blob);
+            await tx.done;
+        } else {
+            // download WASM
+            let wasmReq = await fetch(bundle.mainModule);
+            let blob = await wasmReq.blob();
+            duckdb_wasmURL = URL.createObjectURL(blob);
+
+            const tx = i_db.transaction('parquets', 'readwrite');
+            const store = tx.objectStore('parquets');
+            await store.put(blob, 'duckdb_wasm');
+            await tx.done;
+
+            localStorage.setItem('duckdb_version', libraryVersion);
+        }
 
         // download Wasm
         if (!bundle.pthreadWorker) {
@@ -171,23 +197,14 @@
             })
         }
 
-        // await idb.deleteDB('DuckParquet');
-        i_db = await idb.openDB('DuckParquet', 2, {
-            upgrade(i_db) {
-                // Create a store of objects
-                i_db.createObjectStore('parquets');
-            },
-        });
-
         f_db = firedb.getDatabase(firebaseApp);
         const dbRef = firedb.ref(f_db);
         firedb.get(firedb.child(dbRef, 'duckdb')).then(async (snapshot) => {
             if (snapshot.exists()) {
-                const tx = i_db.transaction('parquets', 'readwrite');
-                const store = tx.objectStore('parquets');
-
                 data = snapshot.val()
                 for (k in data) {
+                    const tx = i_db.transaction('parquets', 'readwrite');
+                    const store = tx.objectStore('parquets');
                     let parquetbuff = (await store.get(data[k].file.hash)) || 0;
                     if (parquetbuff) {
                         let parquet_name = data[k].parquet.name

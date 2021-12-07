@@ -1,7 +1,7 @@
 const express = require("express");
 const path = require("path");
 const dotenv = require('dotenv').config();
-
+var expressStaticGzip = require("express-static-gzip");
 // const snowflake = require('snowflake-sdk');
 // const sfcon = snowflake.createConnection({
 //     account: process.env.SNOWFLAKE_ACCOUNT,
@@ -33,7 +33,8 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use("/static", express.static(path.resolve(__dirname, "public", "static")));
+app.use(expressStaticGzip(__dirname + '/public/'));
+// app.use("/static", express.static(path.resolve(__dirname, "public", "static")));
 
 app.get("/", (req, res) => {
     res.sendFile(path.resolve(__dirname, "public", "index.html"));
