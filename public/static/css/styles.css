@@ -118,8 +118,13 @@
     bottom: 0%;
     animation: rotate-three 1s linear infinite;
     border-top: 3px solid #6262d5;
-  }
+}
   
+#pageloader {
+    position: relative !important;
+    margin-top: 10%;
+}
+
 @keyframes rotate-one {
     0% {
       transform: rotateX(35deg) rotateY(-45deg) rotateZ(0deg);
@@ -188,7 +193,7 @@
 }
 
 
-.cancel_button {
+.hidden {
     display: none;
 }
 

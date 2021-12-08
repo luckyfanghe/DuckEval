@@ -33,7 +33,7 @@
             <div style="float: left;">
                 <button type="button" class="btn" onclick="onClickPlay()"><img src="/static/images/play.svg" style="width: 15px; margin: 0;"></button>
                 <br><br>
-                <button type="button" class="btn tooltip cancel_button" onclick="onClickCancel()" id="cancel_button">
+                <button type="button" class="btn tooltip hidden" onclick="onClickCancel()" id="cancel_button">
                     <img src="/static/images/cancel.svg" style="width: 15px; margin: 0;">
                     <span class="tooltiptext tooltip-right">If click this button, the query will be stopped right away and initialized database</span>
                 </button>
@@ -49,7 +49,12 @@
             </textarea>
         </div>
         <div class="right_panel">
-            <table class="sortable-theme-bootstrap" data-sortable name="sortable_table" id="sortable_table">
+            <div class="loader" id="pageloader">
+                <div class="inner one"></div>
+                <div class="inner two"></div>
+                <div class="inner three"></div>
+            </div>
+            <table class="sortable-theme-bootstrap hidden" data-sortable name="sortable_table" id="sortable_table">
                 <thead id="thead">
                     <tr>
                         <th></th>
@@ -140,6 +145,9 @@
     }
 
     async function load() {
+        const loader = document.getElementById("pageloader");
+        loader.classList.add("show_block");
+
         // await idb.deleteDB('DuckParquet');
         i_db = await idb.openDB('DuckParquet', 2, {
             upgrade(i_db) {
@@ -228,6 +236,9 @@
             } else {
                 console.log("No data available");
             }
+            loader.classList.remove("show_block");
+            const stable = document.getElementById("sortable_table");
+            stable.classList.remove("hidden");
         }).catch((error) => {
             console.log(error);
         });
