@@ -27,7 +27,7 @@
 
 <body>
 <div>
-    <h2>SQL Editer</h2>
+    <h3>SQL Editer</h3>
     <div class="sql_editer_container">
         <div class="left_panel">
             <div style="float: left;">
@@ -54,21 +54,62 @@
                 <div class="inner two"></div>
                 <div class="inner three"></div>
             </div>
-            <table class="sortable-theme-bootstrap hidden" data-sortable name="sortable_table" id="sortable_table">
-                <thead id="thead">
-                    <tr>
-                        <th></th>
-                        <th>Name</th>
-                        <th>Size</th>
-                        <th>FileLastModified</th>
-                        <th>PreviewGenerated</th>
-                        <th>LocalTable</th>
-                        <th>GCSElapsed</th>
-                    </tr>
-                </thead>
-                <tbody id="tbody">
-                </tbody>
-            </table>
+            <div class="hidden" id="tab_container">
+                <div class="tab">
+                    <button class="tablinks" onclick="openTabs(event, 't_files')">Files</button>
+                    <button class="tablinks" onclick="openTabs(event, 't_tables')">Tables</button>
+                    <button class="tablinks" onclick="openTabs(event, 't_logs')">Logs</button>
+                </div>
+                <div id="t_files" class="tabcontent">
+                    <table class="sortable-theme-bootstrap" data-sortable name="t_files_st" id="t_files_st">
+                        <thead id="thead">
+                            <tr>
+                                <th></th>
+                                <th>Name</th>
+                                <th>Size</th>
+                                <th>Last Modified</th>
+                                <th>Preview Generated?</th>
+                                <th>LocalTableName</th>
+                                <th>LocalManaged ParquetFile</th>
+                                <th>RemoteManaged ParquetFile</th>
+                                <th>RemoteManaged BQTable</th>
+                            </tr>
+                        </thead>
+                        <tbody id="t_files_st_tbody">
+                        </tbody>
+                    </table>
+                </div>
+                <div id="t_tables" class="tabcontent">
+                    <table class="sortable-theme-bootstrap" data-sortable name="t_tables_st" id="t_tables_st">
+                        <thead id="thead">
+                            <tr>
+                                <th></th>
+                                <th>Name</th>
+                                <th>LocalManagedParquetFile</th>
+                                <th>RemoteManagedParquetFile</th>
+                                <th>RemoteManagedBQTable</th>
+                            </tr>
+                        </thead>
+                        <tbody id="t_tables_st_tbody">
+                        </tbody>
+                    </table>
+                </div>
+                <div id="t_logs" class="tabcontent">
+                    <table class="sortable-theme-bootstrap" data-sortable name="t_logs_st" id="t_logs_st">
+                        <thead id="thead">
+                            <tr>
+                                <th></th>
+                                <th>EventType</th>
+                                <th>Timestamp</th>
+                                <th>Duration</th>
+                                <th>Text</th>
+                            </tr>
+                        </thead>
+                        <tbody id="t_logs_st_tbody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
     <div class="loader" id="loader">
@@ -115,7 +156,7 @@
     var canvasgrid;
     var cancel_query = false, first_result = false;
     var internal_tables = [], parquet_buffer = {};
-
+    var current_tab;
     var f_storage, f_db, i_db;
   
     DUCKDB_BUNDLES = ({
@@ -144,9 +185,47 @@
         return db;
     }
 
+    async function init_firedb() {
+        const dbRef = firedb.ref(f_db);
+        try {
+            const snapshot = await firedb.get(firedb.child(dbRef, 'duckdb'));
+            document.getElementById("pageloader").classList.remove("show_block");
+            document.getElementById("tab_container").classList.remove("hidden");
+
+            if (snapshot.exists()) {
+                data = snapshot.val()
+                for (k in data) {
+                    const tx = i_db.transaction('parquets', 'readwrite');
+                    const store = tx.objectStore('parquets');
+                    let parquetbuff = (await store.get(data[k].file.hash)) || 0;
+                    if (parquetbuff) {
+                        let parquet_name = data[k].parquet.name
+                        parquet_buffer[parquet_name] = parquetbuff;
+                        for (let i=0; i<duck_dbs.length; i++) {
+                            await duck_dbs[i].instance.registerFileBuffer(parquet_name, parquetbuff);
+                        }
+                        await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${data[k].table.name}' AS (SELECT * FROM '${parquet_name}')`);
+                        data[k].table.icon = TABLE_ICON_PREVIEW;
+                    } else {
+                        data[k].table.icon = TABLE_ICON_REFRESH;
+                        // data[k].table.preview = '';
+                        data[k].table.localtable = '';
+                        data[k].table.gcs_elapsed = '';
+                        data[k].parquet.elapsed = '';
+                    }
+                    internal_tables.push(data[k]);
+                }
+            } else {
+                console.log("No data available");
+            }
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     async function load() {
-        const loader = document.getElementById("pageloader");
-        loader.classList.add("show_block");
+        document.getElementById("pageloader").classList.add("show_block");
 
         // await idb.deleteDB('DuckParquet');
         i_db = await idb.openDB('DuckParquet', 2, {
@@ -205,45 +284,10 @@
             })
         }
 
-        f_db = firedb.getDatabase(firebaseApp);
-        const dbRef = firedb.ref(f_db);
-        firedb.get(firedb.child(dbRef, 'duckdb')).then(async (snapshot) => {
-            if (snapshot.exists()) {
-                data = snapshot.val()
-                for (k in data) {
-                    const tx = i_db.transaction('parquets', 'readwrite');
-                    const store = tx.objectStore('parquets');
-                    let parquetbuff = (await store.get(data[k].file.hash)) || 0;
-                    if (parquetbuff) {
-                        let parquet_name = data[k].parquet.name
-                        parquet_buffer[parquet_name] = parquetbuff;
-                        for (let i=0; i<duck_dbs.length; i++) {
-                            await duck_dbs[i].instance.registerFileBuffer(parquet_name, parquetbuff);
-                        }
-                        await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${data[k].table.name}' AS (SELECT * FROM '${parquet_name}')`);
-                        data[k].table.icon = TABLE_ICON_PREVIEW;
-                    } else {
-                        data[k].table.icon = TABLE_ICON_REFRESH;
-                        // data[k].table.preview = '';
-                        data[k].table.localtable = '';
-                        data[k].table.gcs_elapsed = '';
-                        data[k].parquet.elapsed = '';
-                    }
-                    internal_tables.push(data[k]);
-                }
-
-                refresh_internal_table();
-            } else {
-                console.log("No data available");
-            }
-            loader.classList.remove("show_block");
-            const stable = document.getElementById("sortable_table");
-            stable.classList.remove("hidden");
-        }).catch((error) => {
-            console.log(error);
-        });
-        
         f_storage = firestorage.getStorage(firebaseApp);
+        f_db = firedb.getDatabase(firebaseApp);
+
+        await init_firedb();
     }
 
     window.onload = function () { 
@@ -307,7 +351,7 @@
                     icon: TABLE_ICON_NONE
                 },
             });
-            refresh_internal_table();
+            refresh_tables();
             for(let i=0; i<duck_dbs.length; i++) {
                 duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
             }
@@ -322,7 +366,7 @@
         for (let i=0; i<internal_tables.length; i++) {
             if (internal_tables[i].file.name == file_name) {
                 internal_tables[i].table.preview = preview ? `Yes (${elapsed.toFixed(2)}s)`: 'No';
-                refresh_internal_table();
+                refresh_tables();
 
                 elapsed = Date.now()
                 duck_dbs[0].in_using = true;
@@ -333,7 +377,7 @@
                         internal_tables[i].table.name = table_name;
                         internal_tables[i].table.localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
                         internal_tables[i].file.hash =  await hashwasm.md5(`${internal_tables[i].file.name}${internal_tables[i].file.size}${internal_tables[i].file.lastModified}`);
-                        refresh_internal_table();
+                        refresh_tables();
                         export_parquet(duck_dbs[0].instance, internal_tables[i])
                     }
                     duck_dbs[0].in_using = false;
@@ -363,54 +407,83 @@
                 elapsed = (Date.now() - elapsed) / 1000;
                 internal_tables[id].table.gcs_elapsed = `${elapsed.toFixed(2)}`;
                 internal_tables[id].table.icon = TABLE_ICON_PREVIEW;
-                refresh_internal_table();
+                refresh_tables();
 
                 elapsed = Date.now();
                 await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${parquet_name}')`);
                 elapsed = (Date.now() - elapsed) / 1000;
                 internal_tables[id].table.localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
-                refresh_internal_table();
+                refresh_tables();
             })
             .catch((error) => {
                 console.log(error);
             });
         }
     }
+    
+    function openTabs(evt, tabName) {
+        let i, tabcontent, tablinks;
+        tabcontent = document.getElementsByClassName("tabcontent");
+        for (i = 0; i < tabcontent.length; i++) {
+            tabcontent[i].style.display = "none";
+        }
+        tablinks = document.getElementsByClassName("tablinks");
+        for (i = 0; i < tablinks.length; i++) {
+            tablinks[i].className = tablinks[i].className.replace(" active", "");
+        }
+        document.getElementById(tabName).style.display = "block";
+        evt.currentTarget.className += " active";
+        current_tab = tabName;
+        refresh_tables();
+    }
 
-    function refresh_internal_table() {
-        var tbody = document.getElementById("tbody");
+    function refresh_tables() {
+        if (!current_tab)
+            return;
+
+        var tbody = document.getElementById(`${current_tab}_st_tbody`);
 
         while (tbody.hasChildNodes()) {
             tbody.removeChild(tbody.lastChild);
         }
 
         for (let k in internal_tables) {
-            let t = internal_tables[k]
-            let tr = document.createElement("tr");
-            if (t.table.icon == TABLE_ICON_NONE) {
-                addCell(tr, "td", "");
+            let t = internal_tables[k];
+            if (current_tab == "t_files") {
+                let tr = document.createElement("tr");
+                if (t.table.icon == TABLE_ICON_NONE) {
+                    addCell(tr, "td", "");
+                } else {
+                    if (t.table.icon == TABLE_ICON_PREVIEW)
+                        addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
+                    else
+                        addCell(tr, "td", "", onClickPreview, "/static/images/refresh.svg");
+                }
+                addCell(tr, "td", t.file.name);
+                addCell(tr, "td", t.file.size);
+                addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
+                if (t.table.preview) addCell(tr, "td", t.table.preview);
+                if (t.table.name) addCell(tr, "td", t.table.name);
+                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
+                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
+                if (t.table.bqname) addCell(tr, "td", t.table.bqname);
+                tr.id = k;
+                tbody.appendChild(tr);
+            } else if (current_tab == "t_tables") {
+                let tr = document.createElement("tr");
+                addCell(tr, "td", k);
+                if (t.table.name) addCell(tr, "td", t.table.name);
+                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
+                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
+                if (t.table.bqname) addCell(tr, "td", t.table.bqname);
+                tr.id = k;
+                tbody.appendChild(tr);
             } else {
-                if (t.table.icon == TABLE_ICON_PREVIEW)
-                    addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
-                else
-                    addCell(tr, "td", "", onClickPreview, "/static/images/refresh.svg");
+                let tr = document.createElement("tr");
             }
-            addCell(tr, "td", t.file.name);
-            addCell(tr, "td", t.file.size);
-            addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
-            if (t.table.preview) addCell(tr, "td", t.table.preview);
-            if (t.table.localtable) addCell(tr, "td", t.table.localtable);
-            if (t.table.gcs_elapsed) {
-                if (t.parquet.elapsed) 
-                    addCell(tr, "td", t.parquet.elapsed + " / " + t.table.gcs_elapsed + " s");
-                else
-                    addCell(tr, "td", t.table.gcs_elapsed + " s");
-            }
-            tr.id = k;
-            tbody.appendChild(tr);
         }
 
-        Sortable.initTable(document.querySelector('#sortable_table'))
+        Sortable.initTable(document.getElementById(current_tab))
     }
 
     function onClickPlay() {
@@ -507,11 +580,8 @@
     }
 
     async function onClickCancel() {
-        var loader = document.getElementById("loader");
-        loader.classList.remove("show_block");
-
-        var cancel_button = document.getElementById("cancel_button");
-        cancel_button.classList.remove("show_block");
+        document.getElementById("loader").classList.remove("show_block");
+        document.getElementById("cancel_button").classList.remove("show_block");
 
         canvasgrid.data = [];
         var qstatus = document.getElementById('query_status');
@@ -539,10 +609,8 @@
     }
 
     function show_loader() {
-        var loader = document.getElementById("loader");
-        loader.classList.add("show_block");
-        var cancel_button = document.getElementById("cancel_button");
-        cancel_button.classList.add("show_block");
+        document.getElementById("loader").classList.add("show_block");
+        document.getElementById("cancel_button").classList.add("show_block");
     }
 
     async function export_parquet(db, data) {
@@ -571,7 +639,7 @@
             firestorage.uploadBytes(storageRef, buff)
             .then((res) => {
                 data.table.gcs_elapsed = ((Date.now() - elapsed) / 1000).toFixed(2);
-                refresh_internal_table();
+                refresh_tables();
                 let dict = internal_tables.reduce((a, x) => ({...a, [x.file.hash]: x}), {})
                 firedb.set(firedb.ref(f_db, 'duckdb'), dict);
             })
@@ -620,8 +688,6 @@
         var tid = setTimeout(show_loader, 300);
         var qstatus = document.getElementById('query_status');
         qstatus.innerHTML = '<span class="elapsed">Running...</span>';
-        var cancel_button = document.getElementById("cancel_button");
-        var loader = document.getElementById("loader");
 
         var ret = false, data = [], conn, uindex;
         try {
@@ -705,8 +771,8 @@
         duck_dbs[uindex].in_using = false;
         duck_dbs[uindex].running_main_query = false;
 
-        cancel_button.classList.remove("show_block");
-        loader.classList.remove("show_block");
+        document.getElementById("cancel_button").classList.remove("show_block");
+        document.getElementById("loader").classList.remove("show_block");
         if (cancel_query)
             canvasgrid.data = [];
         else
