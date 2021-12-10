@@ -65,14 +65,13 @@
                         <thead id="thead">
                             <tr>
                                 <th></th>
-                                <th>Name</th>
-                                <th>Size</th>
-                                <th>Last Modified</th>
-                                <th>Preview Generated?</th>
-                                <th>LocalTableName</th>
-                                <th>LocalManaged ParquetFile</th>
-                                <th>RemoteManaged ParquetFile</th>
-                                <th>RemoteManaged BQTable</th>
+                                <th class="middle_align">Name</th>
+                                <th class="middle_align">Size</th>
+                                <th class="middle_align">Last Modified</th>
+                                <th class="middle_align">Preview Generated?</th>
+                                <th class="middle_align">Local TableName</th>
+                                <th class="middle_align">LocalManaged ParquetFile</th>
+                                <th class="middle_align">RemoteManaged ParquetFile</th>
                             </tr>
                         </thead>
                         <tbody id="t_files_st_tbody">
@@ -84,10 +83,10 @@
                         <thead id="thead">
                             <tr>
                                 <th></th>
-                                <th>Name</th>
-                                <th>LocalManagedParquetFile</th>
-                                <th>RemoteManagedParquetFile</th>
-                                <th>RemoteManagedBQTable</th>
+                                <th class="middle_align">Name</th>
+                                <th class="middle_align">LocalManagedParquetFile</th>
+                                <th class="middle_align">RemoteManagedParquetFile</th>
+                                <th class="middle_align">RemoteManagedBQTable</th>
                             </tr>
                         </thead>
                         <tbody id="t_tables_st_tbody">
@@ -151,11 +150,13 @@
     const libraryVersion = "0.1.12-dev89.0";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
     const TABLE_ICON_NONE = 0, TABLE_ICON_PREVIEW = 1, TABLE_ICON_REFRESH = 2;
+    const EVENT_TYPE_TABLE = 0, EVENT_TYPE_FILE = 1, EVENT_TYPE_QUERY = 2;
+    const EVENT_TYPES = ["TABLE", "FILE", "QUERY"]
     var duck_dbs = [], duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
     var canvasgrid;
     var cancel_query = false, first_result = false;
-    var internal_tables = [], parquet_buffer = {};
+    var internal_tables = [], event_logs = [], parquet_buffer = {};
     var current_tab;
     var f_storage, f_db, i_db;
   
@@ -332,7 +333,7 @@
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
     async function registerFile() {
-        let existTable = false
+        let existTable = false;
         for (let i=0; i<internal_tables.length; i++) {
             if (internal_tables[i].file.name == this.files[0].name) {
                 existTable = true;
@@ -340,45 +341,51 @@
             }
         }
         if (!existTable) {
-            internal_tables.push({
+            let new_data = {
                 file: {
                     name: this.files[0].name,
                     size: this.files[0].size,
                     lastModified: this.files[0].lastModified,
+                    hash: await hashwasm.md5(`${this.files[0].name}${this.files[0].size}${this.files[0].lastModified}`),
                     handle: this.files[0]
                 },
                 table: {
                     icon: TABLE_ICON_NONE
                 },
-            });
+            }
+            internal_tables.push(new_data);
             refresh_tables();
             for(let i=0; i<duck_dbs.length; i++) {
                 duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
             }
-            preview_time = Date.now()
-            let preview = await run_query(`SELECT * FROM '${this.files[0].name}' LIMIT 100`, true);
-            setTimeout(background_process(this.files[0].name, preview, (Date.now()-preview_time)/1000), 100);
+            const preview_start_time = Date.now();
+            const query = `SELECT * FROM '${this.files[0].name}' LIMIT 100`;
+            const preview = await run_query(query, true);
+            new_data.table.preview = preview ? `Yes`: 'No';
+            save_event_logs(EVENT_TYPE_FILE, preview_start_time, Date.now(), `"${this.files[0].name}" Preview Generated - ${new_data.table.preview}`, query);
+            refresh_tables();
+
+            setTimeout(background_process(this.files[0].name), 100);
         }
     }
 
-    function background_process(file_name, preview, elapsed) {
+    function background_process(file_name) {
         const table_name = file_name.split('.')[0].toLowerCase();
         for (let i=0; i<internal_tables.length; i++) {
             if (internal_tables[i].file.name == file_name) {
-                internal_tables[i].table.preview = preview ? `Yes (${elapsed.toFixed(2)}s)`: 'No';
-                refresh_tables();
-
-                elapsed = Date.now()
+                const create_table_start_time = Date.now();
+                const query = `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file_name}')`;
                 duck_dbs[0].in_using = true;
-                run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${table_name}' AS (SELECT * FROM '${file_name}')`, true).then(async (res) => {
+                run_only_query(duck_dbs[0].instance, query, true).then(async (res) => {
                     if (res) {
-                        elapsed = (Date.now() - elapsed) / 1000
                         internal_tables[i].table.icon = TABLE_ICON_PREVIEW;
                         internal_tables[i].table.name = table_name;
-                        internal_tables[i].table.localtable = `${table_name} (${elapsed.toFixed(2)}s)`;
-                        internal_tables[i].file.hash =  await hashwasm.md5(`${internal_tables[i].file.name}${internal_tables[i].file.size}${internal_tables[i].file.lastModified}`);
+                        save_event_logs(EVENT_TYPE_TABLE, create_table_start_time, Date.now(), `Created new local table (${table_name}) from "${file_name}"`, query);
                         refresh_tables();
-                        export_parquet(duck_dbs[0].instance, internal_tables[i])
+                        export_parquet(duck_dbs[0].instance, internal_tables[i]);
+                    } else {
+                        save_event_logs(EVENT_TYPE_TABLE, create_table_start_time, Date.now(), `Failed to create local table (${table_name}) from "${file_name}"`, query);
+                        refresh_tables();
                     }
                     duck_dbs[0].in_using = false;
                 })
@@ -421,6 +428,22 @@
         }
     }
     
+    async function save_event_logs(event_type, start_time, end_time, details, query=null) {
+        let event_hash = await hashwasm.md5(`${event_type}${start_time}${end_time}${details}`);
+        let event = {
+            type: EVENT_TYPES[event_type],
+            start_time: start_time,
+            end_time: end_time,
+            duration: ((end_time - start_time) / 1000).toFixed(2),
+            details: details,
+            query: query
+        };
+        firedb.set(firedb.ref(f_db, 'events/'+event_hash), event);
+        
+        event.hash = event_hash
+        event_logs.push(event);
+    }
+
     function openTabs(evt, tabName) {
         let i, tabcontent, tablinks;
         tabcontent = document.getElementsByClassName("tabcontent");
@@ -447,39 +470,47 @@
             tbody.removeChild(tbody.lastChild);
         }
 
-        for (let k in internal_tables) {
-            let t = internal_tables[k];
-            if (current_tab == "t_files") {
+        if (current_tab == "t_logs") {
+            for (let ev of event_logs) {
                 let tr = document.createElement("tr");
-                if (t.table.icon == TABLE_ICON_NONE) {
-                    addCell(tr, "td", "");
-                } else {
-                    if (t.table.icon == TABLE_ICON_PREVIEW)
-                        addCell(tr, "td", "", onClickPreview, "/static/images/preview.svg");
-                    else
-                        addCell(tr, "td", "", onClickPreview, "/static/images/refresh.svg");
+                addCell(tr, "td", ev.type);
+                addCell(tr, "td", ev.start_time);
+                addCell(tr, "td", ev.duration + "s");
+                addCell(tr, "td", ev.details);
+                tbody.appendChild(tr);
+            }
+        } else {
+            for (let k in internal_tables) {
+                let t = internal_tables[k];
+                if (current_tab == "t_files") {
+                    let tr = document.createElement("tr");
+                    if (t.table.icon == TABLE_ICON_NONE) {
+                        addCell(tr, "td");
+                    } else {
+                        if (t.table.icon == TABLE_ICON_PREVIEW)
+                            addCell(tr, "td", "", "", onClickPreview, "/static/images/preview.svg");
+                        else
+                            addCell(tr, "td", "", "", onClickPreview, "/static/images/refresh.svg");
+                    }
+                    addCell(tr, "td", t.file.name);
+                    addCell(tr, "td", t.file.size);
+                    addCell(tr, "td", new Date(t.file.lastModified).toUTCString(), "cell_minwidh");
+                    if (t.table.preview) addCell(tr, "td", t.table.preview); else addCell(tr, "td");
+                    if (t.table.name) addCell(tr, "td", t.table.name); else addCell(tr, "td");
+                    if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.parquet.name, "cell_overlay"); else addCell(tr, "td");
+                    if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.parquet.name, "cell_overlay"); else addCell(tr, "td");
+                    tr.id = k;
+                    tbody.appendChild(tr);
+                } else if (current_tab == "t_tables") {
+                    let tr = document.createElement("tr");
+                    addCell(tr, "td", parseInt(k)+1);
+                    if (t.table.name) addCell(tr, "td", t.table.name); else addCell(tr, "td");
+                    if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.parquet.name); else addCell(tr, "td");
+                    if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.parquet.name); else addCell(tr, "td");
+                    if (t.table.bqname) addCell(tr, "td", t.table.bqname); else addCell(tr, "td");
+                    tr.id = k;
+                    tbody.appendChild(tr);
                 }
-                addCell(tr, "td", t.file.name);
-                addCell(tr, "td", t.file.size);
-                addCell(tr, "td", new Date(t.file.lastModified).toUTCString());
-                if (t.table.preview) addCell(tr, "td", t.table.preview);
-                if (t.table.name) addCell(tr, "td", t.table.name);
-                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
-                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
-                if (t.table.bqname) addCell(tr, "td", t.table.bqname);
-                tr.id = k;
-                tbody.appendChild(tr);
-            } else if (current_tab == "t_tables") {
-                let tr = document.createElement("tr");
-                addCell(tr, "td", k);
-                if (t.table.name) addCell(tr, "td", t.table.name);
-                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
-                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.table.name);
-                if (t.table.bqname) addCell(tr, "td", t.table.bqname);
-                tr.id = k;
-                tbody.appendChild(tr);
-            } else {
-                let tr = document.createElement("tr");
             }
         }
 
@@ -619,29 +650,31 @@
             const results = await db.globFiles('/tmp/*');
 
             let elapsed = Date.now();
-            await conn.query(`COPY ${data.table.name} TO '/tmp/${data.table.name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`);
-            const buff = await db.copyFileToBuffer(`/tmp/${data.table.name}.parquet`);
+            const query = `COPY ${data.table.name} TO '/tmp/${data.file.hash}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`;
+            await conn.query(query);
             await conn.close();
 
             data.parquet = {
-                name: `${data.table.name}.parquet`,
+                name: `${data.file.hash}.parquet`,
                 elapsed: ((Date.now() - elapsed) / 1000).toFixed(2)
             }
+            save_event_logs(EVENT_TYPE_FILE, elapsed, Date.now(), `Export parquet file "${data.parquet.name}"`, query);
 
-            parquet_buffer[data.parquet.name] = buff;
+            parquet_buffer[data.parquet.name] = await db.copyFileToBuffer(`/tmp/${data.parquet.name}`);
 
-            let dict = internal_tables.reduce((a, x) => ({...a, [x.file.hash]: x}), {})
-            firedb.set(firedb.ref(f_db, 'duckdb'), dict);
+            firedb.set(firedb.ref(f_db, 'duckdb/'+data.file.hash), data);
 
             //upload firebase storage
             const storageRef = firestorage.ref(f_storage, data.parquet.name);
             elapsed = Date.now();
-            firestorage.uploadBytes(storageRef, buff)
+            firestorage.uploadBytes(storageRef, parquet_buffer[data.parquet.name])
             .then((res) => {
+                console.log(res);
+                data.parquet.remote = data.parquet.name;
                 data.table.gcs_elapsed = ((Date.now() - elapsed) / 1000).toFixed(2);
+                save_event_logs(EVENT_TYPE_FILE, elapsed, Date.now(), `Upload "${data.parquet.name}" to firebase storage`);
                 refresh_tables();
-                let dict = internal_tables.reduce((a, x) => ({...a, [x.file.hash]: x}), {})
-                firedb.set(firedb.ref(f_db, 'duckdb'), dict);
+                firedb.set(firedb.ref(f_db, 'duckdb/'+data.file.hash), data);
             })
             .catch((error) => {
                 console.log(error);
@@ -650,7 +683,7 @@
             const tx = i_db.transaction('parquets', 'readwrite');
             const store = tx.objectStore('parquets');
 
-            await store.put(buff, data.file.hash);
+            await store.put(parquet_buffer[data.parquet.name], data.file.hash);
             await tx.done;
 
             return true;
@@ -683,6 +716,9 @@
     } 
 
     async function run_query(query, preview=false) {
+        if (duck_dbs.length == 0)
+            return false;
+
         first_result = false
 
         var tid = setTimeout(show_loader, 300);

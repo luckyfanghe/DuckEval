@@ -28,12 +28,11 @@ function load_data_with_sortabletable(rows) {
     Sortable.initTable(document.querySelector('#sortable_table'))
 }
 
-function addCell(tr, type, value, onclick=null, img_url=null) {
+function addCell(tr, type, value="", _class="", onclick=null, img_url=null) {
     var td = document.createElement(type)
     td.textContent = value;
-    if (onclick) {
-        td.onclick = onclick;
-    }
+    if (_class) td.classList.add(_class);
+    if (onclick) td.onclick = onclick;
     if (img_url) {
         var img = document.createElement('img'); 
         img.src = img_url; 
