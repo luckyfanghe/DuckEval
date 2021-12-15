@@ -11,7 +11,7 @@ table[data-sortable] th {
 /* line 10, ../sass/_sortable.sass */
 table[data-sortable] th, table[data-sortable] td {
   text-align: left;
-  padding: 10px;
+  padding: 8px 10px;
 }
 /* line 14, ../sass/_sortable.sass */
 table[data-sortable] th:not([data-sortable="false"]) {
@@ -57,8 +57,8 @@ table[data-sortable] th[data-sorted-direction="ascending"]:after {
 /* line 5, ../sass/sortable-theme-bootstrap.sass */
 table[data-sortable].sortable-theme-bootstrap {
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 12px;
+  line-height: 16px;
   color: #333333;
   background: white;
 }
