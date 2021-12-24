@@ -159,6 +159,8 @@ SELECT 1 AS "Result"
     const libraryVersion = "0.1.12-dev89.0";
     const projectId = "first-outlet-750", tableId = "DuckDBStore";
     const distURL = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${libraryVersion}/dist/`;
+    const BQUERY_URL = `https://bigquery.googleapis.com/bigquery/v2/projects/${projectId}/queries`
+
     const TABLE_ICON_NONE = 0, TABLE_ICON_PREVIEW = 1, TABLE_ICON_REFRESH = 2;
     const TID_FILES = "t_files", TID_TABLES = "t_tables", TID_LOGS = "t_logs", TID_ALL = "t_all";
     const EVENT_TYPE_TABLE = 0, EVENT_TYPE_FILE = 1, EVENT_TYPE_QUERY = 2;
@@ -171,6 +173,7 @@ SELECT 1 AS "Result"
     var current_tab;
     var f_storage, f_db, i_db;
     var f_timerid;
+    var bqtoken;
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -198,11 +201,34 @@ SELECT 1 AS "Result"
         return db;
     }
 
-    async function init_duckdb() {
-        for (let i=0; i<duck_dbs.length; i++) {
-            await duck_dbs[i].instance.registerFileBuffer(parquet_name, parquetbuff);
+    async function register_parquet_buffer() {
+        if (duck_dbs.length != 3) {
+            setTimeout(register_parquet_buffer, 1000);
+            return;
         }
-        await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${data[k].table.name}' AS (SELECT * FROM '${parquet_name}')`);
+
+        if (Object.keys(parquet_buffer).length === 0)
+            return;
+
+        for (let t of internal_tables) {
+            if (t.parquet && parquet_buffer[t.parquet.name]) {
+                for (let i=0; i<duck_dbs.length; i++) {
+                    await duck_dbs[i].instance.registerFileBuffer(t.parquet.name, parquet_buffer[t.parquet.name]);
+                }
+            }
+        }
+
+        duck_dbs[0].in_using = true;
+        try {
+            for (let t of internal_tables) {
+                if (t.parquet && parquet_buffer[t.parquet.name]) {
+                    await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.parquet.name}')`);
+                }
+            }
+        } catch (error) {
+            console.log(error.message);
+        }
+        duck_dbs[0].in_using = false;
     }
 
     async function init_firebase() {
@@ -234,6 +260,7 @@ SELECT 1 AS "Result"
                     }
                     internal_tables.push(data[k]);
                 }
+                setTimeout(register_parquet_buffer, 1000);
             } else {
                 console.log("No data available");
             }
@@ -245,6 +272,11 @@ SELECT 1 AS "Result"
         setTimeout(init_firebase, 200);
     }
 
+    function getBQToken() {
+        fetch("https://us-central1-first-outlet-750.cloudfunctions.net/bqtoken")
+        .then(res => res.json())
+        .then(data => {bqtoken = data.Authorization;})
+    }
     async function load() {
         setTimeout(init_firebase, 200);
 
@@ -256,7 +288,7 @@ SELECT 1 AS "Result"
             },
         });
 
-        var qstatus = document.getElementById('query_status');
+        let qstatus = document.getElementById('query_status');
         qstatus.innerHTML = `<span>Initializing DuckDB ... </span>`;
 
         duckdb = await import(`https://cdn.skypack.dev/@duckdb/duckdb-wasm@${libraryVersion}`);
@@ -300,8 +332,8 @@ SELECT 1 AS "Result"
             duckdb_pThreadURL = URL.createObjectURL(await pthreadReq.blob());
         }
 
-        var instance;
-        for (var i=0; i<3; i++) {
+        let instance;
+        for (let i=0; i<3; i++) {
             instance = await make_duckdb();
             duck_dbs.push({
                 instance: instance,
@@ -311,6 +343,7 @@ SELECT 1 AS "Result"
         }
         qstatus.innerHTML = "&nbsp;";
         document.title = `DuckDB - ${libraryVersion}`;
+        getBQToken();
     }
 
     window.onload = function () { 
@@ -348,7 +381,7 @@ SELECT 1 AS "Result"
 
         canvasgrid.style.cellWidth = 120;
         // canvasgrid.style.cellFont = "14px";
-        canvasgrid.style.height = '570px';
+        canvasgrid.style.height = '660px';
         canvasgrid.style.width = '100%';
     };
 
@@ -384,7 +417,7 @@ SELECT 1 AS "Result"
             const query = `SELECT * FROM '${this.files[0].name}' LIMIT 100`;
             const preview = await run_query(query, true);
             new_data.table.preview = preview ? `Yes`: 'No';
-            save_event_logs(EVENT_TYPE_FILE, preview_start_time, Date.now(), `"${this.files[0].name}" Preview Generated - ${new_data.table.preview}`, query);
+            save_event_logs(EVENT_TYPE_FILE, preview_start_time, Date.now(), `"${this.files[0].name}" Preview Generated - ${new_data.table.preview}`, query, false);
             refresh_tables();
 
             setTimeout(background_process(this.files[0].name), 100);
@@ -402,11 +435,11 @@ SELECT 1 AS "Result"
                     if (res) {
                         internal_tables[i].table.icon = TABLE_ICON_PREVIEW;
                         internal_tables[i].table.name = table_name;
-                        save_event_logs(EVENT_TYPE_TABLE, create_table_start_time, Date.now(), `Created new local table (${table_name}) from "${file_name}"`, query);
+                        save_event_logs(EVENT_TYPE_TABLE, create_table_start_time, Date.now(), `Created new local table (${table_name}) from "${file_name}"`, query, false);
                         refresh_tables();
                         export_parquet(duck_dbs[0].instance, internal_tables[i]);
                     } else {
-                        save_event_logs(EVENT_TYPE_TABLE, create_table_start_time, Date.now(), `Failed to create local table (${table_name}) from "${file_name}"`, query);
+                        save_event_logs(EVENT_TYPE_TABLE, create_table_start_time, Date.now(), `Failed to create local table (${table_name}) from "${file_name}"`, query, false);
                         refresh_tables();
                     }
                     duck_dbs[0].in_using = false;
@@ -453,7 +486,7 @@ SELECT 1 AS "Result"
         }
     }
     
-    async function save_event_logs(event_type, start_time, end_time, details, query=null) {
+    async function save_event_logs(event_type, start_time, end_time, details, query='', refresh=true) {
         let event_hash = await hashwasm.md5(`${event_type}${start_time}${end_time}${details}`);
         let event = {
             type: EVENT_TYPES[event_type],
@@ -467,6 +500,7 @@ SELECT 1 AS "Result"
         
         event.hash = event_hash
         event_logs.push(event);
+        if (refresh) refresh_tables(TID_LOGS);
     }
 
     function showTable(evt, tabName) {
@@ -740,7 +774,7 @@ SELECT 1 AS "Result"
         return false;
     } 
 
-    async function run_query(query, preview=false) {
+    async function run_query(query, preview=false, save_log=true) {
         if (duck_dbs.length == 0)
             return false;
 
@@ -752,7 +786,7 @@ SELECT 1 AS "Result"
 
         var ret = false, data = [], conn, uindex;
         try {
-            var elapsed = Date.now();
+            const start_time = Date.now();
             for(let i=0; i<duck_dbs.length; i++) {
                 if (!duck_dbs[i].in_using) {
                     uindex = i;
@@ -801,14 +835,15 @@ SELECT 1 AS "Result"
             }
             
             await conn.close();
-
+            
+            const end_time = Date.now();
             if (cancel_query) {
                 qstatus.innerHTML = `<span class="error_code">Query was canceled </span>`;
             } else {
                 if (preview) {
                     qstatus.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
                 } else {
-                    elapsed = Date.now() - elapsed
+                    let elapsed = end_time - start_time;
                     if (elapsed < 1000)
                         qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed} ms</span>`;
                     else {
@@ -818,6 +853,8 @@ SELECT 1 AS "Result"
                 }
             }
 
+            if (save_log)
+                save_event_logs(EVENT_TYPE_QUERY, start_time, end_time, query, query);
             ret = true;
         } 
         catch (e) {
@@ -849,24 +886,41 @@ SELECT 1 AS "Result"
         
         const start_time = Date.now();
         try {
-            const bqdaemon = fireFuncs.httpsCallable(f_funcs, 'bqdaemon');
-            const result = await bqdaemon({command: "Query", query: query});
-            const end_time = Date.now();
-            if (result.data) {
-                canvasgrid.data = result.data;
-                if (preview) {
-                    qstatus.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
-                } else {
-                    const elapsed = end_time - start_time;
-                    if (elapsed < 1000)
-                        qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed} ms</span>`;
-                    else {
-                        elapsed = elapsed / 1000
-                        qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed.toFixed(2)} s</span>`;
+            const res = await fetch(BQUERY_URL, {
+                                        method: 'POST',
+                                        headers: {"authorization": bqtoken, 'Content-Type': 'application/json'},
+                                        body: JSON.stringify({
+                                            "query": query,
+                                            "useLegacySql":false 
+                                    })});
+            
+            if (res.ok) {
+                const result = await res.json();
+                const end_time = Date.now();
+                let data = []
+                if (result.schema && result.rows) {
+                    for (row of result.rows) {
+                        const fieldObject = {};
+                        for (index in row.f) {
+                            fieldObject[result.schema.fields[index].name] = row.f[index].v;
+                        }
+                        data.push(fieldObject);
+                    }
+                    if (preview) {
+                        qstatus.innerHTML = `<span class="elapsed">Preview :</span><span>100 rows</span>`;
+                    } else {
+                        const elapsed = end_time - start_time;
+                        if (elapsed < 1000)
+                            qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed} ms</span>`;
+                        else {
+                            elapsed = elapsed / 1000
+                            qstatus.innerHTML = `<span class="elapsed">Elapsed :</span><span>${elapsed.toFixed(2)} s</span>`;
+                        }
                     }
                 }
+                canvasgrid.data = data;
+                save_event_logs(EVENT_TYPE_QUERY, start_time, end_time, `Run bquery`, query);
             }
-            save_event_logs(EVENT_TYPE_QUERY, start_time, end_time, `Run bquery`, query);
         } catch (error) {
             qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
         }
