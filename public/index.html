@@ -5,6 +5,7 @@
     <link rel="stylesheet" href="http://codemirror.net/lib/codemirror.css">
     <link rel="stylesheet" href="http://codemirror.net/addon/hint/show-hint.css">
     <link rel="stylesheet" href="./static/css/sortable-theme-bootstrap.css" />
+    <link rel="stylesheet" href="./static/css/xdialog.3.4.0.min.css">
     <link rel="stylesheet" href="./static/css/styles.css" />
     
     <script src="http://codemirror.net/lib/codemirror.js"></script>
@@ -84,10 +85,12 @@ SELECT 1 AS "Result"
                                 <th class="middle_align">Name</th>
                                 <th class="middle_align">Size</th>
                                 <th class="middle_align">Last Modified</th>
-                                <th class="middle_align">Preview Generated?</th>
-                                <th class="middle_align">Local TableName</th>
-                                <th class="middle_align">LocalManaged ParquetFile</th>
-                                <th class="middle_align">RemoteManaged ParquetFile</th>
+                                <th class="middle_align">Table Slug</th>
+                                <th class="middle_align">Local Table</th>
+                                <th class="middle_align">Local Parquet</th>
+                                <th class="middle_align">Remote Parquet</th>
+                                <th class="middle_align">Remote Table(BQ)</th>
+                                <th class="middle_align">Suggested Source</th>
                             </tr>
                         </thead>
                         <tbody id="t_files_tbody">
@@ -105,9 +108,9 @@ SELECT 1 AS "Result"
                             <tr>
                                 <th></th>
                                 <th class="middle_align">Name</th>
-                                <th class="middle_align">LocalManagedParquetFile</th>
-                                <th class="middle_align">RemoteManagedParquetFile</th>
-                                <th class="middle_align">RemoteManagedBQTable</th>
+                                <th class="middle_align">Local Parquet</th>
+                                <th class="middle_align">Remote Parquet</th>
+                                <th class="middle_align">Remote BQTable</th>
                             </tr>
                         </thead>
                         <tbody id="t_tables_tbody">
@@ -154,7 +157,7 @@ SELECT 1 AS "Result"
     window.firedb = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-database.js`);
     window.fireFuncs = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-functions.js`);
 </script>
-
+<script src="./static/js/xdialog.3.4.0.min.js"></script>
 <script>
     const libraryVersion = "0.1.12-dev89.0";
     const projectId = "first-outlet-750", tableId = "DuckDBStore";
@@ -475,7 +478,7 @@ SELECT 1 AS "Result"
         });
     }
     function onClickPreview() {
-        const id = this.parentNode.id;
+        const id = this.parentNode.parentNode.id;
         const parquet_name = internal_tables[id].parquet.name;
         const table_name = internal_tables[id].table.name;
         let elapsed = Date.now();
@@ -485,7 +488,87 @@ SELECT 1 AS "Result"
             run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[id].bqtable.name}\` LIMIT 100`, true);
         }
     }
-    
+    function onClickImgDelete() {
+        const id = this.parentNode.parentNode.id;
+        const ttype = id.substr(0, 2);
+        const tid = id.charAt(id.length-1);
+
+        let message = "", res;
+        switch(ttype) {
+            case "LT": message = `Are you sure to delete Local Table "${internal_tables[tid].table.name}"?`; break;
+            case "LP": message = `Are you sure to delete Local Parquet "${internal_tables[tid].parquet.name}"?`; break;
+            case "RP": message = `Are you sure to delete Remote Parquet "${internal_tables[tid].parquet.remote}"?`; break;
+            case "RT": message = `Are you sure to delete Remote Table "${internal_tables[tid].bqtable.name}"?`; break;
+        }
+        xdialog.confirm(message, async function() {
+            const start_time = Date.now();
+            switch(ttype) {
+                case "TS":
+                    break;
+                case "LT":
+                    res = await run_only_query(duck_dbs[0].instance, `DROP TABLE ${internal_tables[tid].table.name}`, true)
+                    if (res) {
+                        save_event_logs(EVENT_TYPE_FILE, start_time, Date.now(), `Removed Local Table "${internal_tables[tid].table.name}"`);
+                        internal_tables[tid].table.localtable = "";
+                    }
+                    break;
+                case "LP":
+                    const tx = i_db.transaction('parquets', 'readwrite');
+                    const store = tx.objectStore('parquets');
+                    await store.delete(internal_tables[tid].file.hash);
+                    await tx.done;
+                    delete parquet_buffer[internal_tables[tid].parquet.name];
+                    save_event_logs(EVENT_TYPE_FILE, start_time, Date.now(), `Removed Local Parquet "${internal_tables[tid].parquet.name}"`);
+                    break;
+                case "RP":
+                    const storageRef = firestorage.ref(f_storage, internal_tables[tid].parquet.remote);
+                    res = await firestorage.deleteObject(storageRef);
+                    if (res === undefined) {
+                        save_event_logs(EVENT_TYPE_FILE, start_time, Date.now(), `Remove Remote Parquet "${internal_tables[tid].parquet.remote}"`);
+                        internal_tables[tid].parquet.remote = "";
+                        firedb.set(firedb.ref(f_db, 'duckdb/'+ internal_tables[tid].file.hash), internal_tables[tid]);
+                    }
+                    break;
+                case "RT":
+                    const bqdaemon = fireFuncs.httpsCallable(f_funcs, 'bqdaemon');
+                    const result = await bqdaemon({command: "RemoveTable", tableId: internal_tables[tid].bqtable.name});
+                    save_event_logs(EVENT_TYPE_FILE, start_time, Date.now(), `Remove Remote Parquet "${internal_tables[tid].bqtable.name}"`);
+                    internal_tables[tid].bqtable.name = "";
+                    firedb.set(firedb.ref(f_db, 'duckdb/'+ internal_tables[tid].file.hash), internal_tables[tid]);
+                    break;
+            }
+            refresh_tables(TID_FILES);
+        }, {
+            style: 'width:420px;font-size:0.8rem;',
+            buttons: {
+                ok: 'Yes',
+                cancel: 'No'
+            }
+        });
+    }
+    function onClickImgDownload() {
+        const id = this.parentNode.parentNode.id;
+        const ttype = id.substr(0, 2);
+        const tid = id.charAt(id.length-1);
+        const t = internal_tables[tid];
+    }
+    function onClickImgUpload() {
+        const id = this.parentNode.parentNode.id;
+        const ttype = id.substr(0, 2);
+        const tid = id.charAt(id.length-1);
+        switch(ttype) {
+            case "TS":
+                break;
+            case "LT":
+                break;
+            case "LP":
+                break;
+            case "RP":
+                break;
+            case "RT":
+                break;
+        }
+    }
     async function save_event_logs(event_type, start_time, end_time, details, query='', refresh=true) {
         let event_hash = await hashwasm.md5(`${event_type}${start_time}${end_time}${details}`);
         let event = {
@@ -523,17 +606,34 @@ SELECT 1 AS "Result"
                     addCell(tr, "td");
                 } else {
                     if (t.table.icon == TABLE_ICON_PREVIEW)
-                        addCell(tr, "td", "", "", onClickPreview, "/static/images/preview.svg");
+                        addCell(tr, "td", "", "", "", "/static/images/preview.svg", onClickPreview);
                     else
-                        addCell(tr, "td", "", "", onClickPreview, "/static/images/refresh.svg");
+                        addCell(tr, "td", "", "", "", "/static/images/refresh.svg", onClickPreview);
                 }
                 addCell(tr, "td", t.file.name);
-                addCell(tr, "td", t.file.size);
-                addCell(tr, "td", new Date(t.file.lastModified).toUTCString(), "cell_minwidh");
-                if (t.table.preview) addCell(tr, "td", t.table.preview); else addCell(tr, "td");
-                if (t.table.localtable) addCell(tr, "td", t.table.localtable); else addCell(tr, "td");
-                if (t.parquet && parquet_buffer[t.parquet.name]) addCell(tr, "td", t.parquet.name, "cell_overlay"); else addCell(tr, "td");
-                if (t.parquet && t.parquet.remote) addCell(tr, "td", t.parquet.remote, "cell_overlay"); else addCell(tr, "td");
+                addCell(tr, "td", formatFileSize(t.file.size));
+                addCell(tr, "td", new Date(t.file.lastModified).toDateString(), "", "cell_minwidh");
+                // if (t.table.preview) addCell(tr, "td", t.table.preview); else addCell(tr, "td");
+                if (t.table.name)
+                    addCell(tr, "td", t.table.name, "TS"+k);
+                else
+                    addCell(tr, "td", "No ", "TS"+k, "", "/static/images/download.svg", onClickImgDownload);
+                if (t.table.localtable)
+                    addCell(tr, "td","Yes", "LT"+k, "", "/static/images/delete.svg", onClickImgDelete);
+                else
+                    addCell(tr, "td", "No ", "LT"+k, "", "/static/images/download.svg", onClickImgDownload);
+                if (t.parquet && parquet_buffer[t.parquet.name])
+                    addCell(tr, "td", "Yes", "LP"+k, "", "/static/images/delete.svg", onClickImgDelete);
+                else
+                    addCell(tr, "td", "No ", "LP"+k, "", "/static/images/download.svg", onClickImgDownload);
+                if (t.parquet && t.parquet.remote)
+                    addCell(tr, "td", "Yes", "RP"+k, "", "/static/images/delete.svg", onClickImgDelete);
+                else
+                    addCell(tr, "td", "No ", "RP"+k, "", "/static/images/download.svg", onClickImgDownload);
+                if (t.bqtable && t.bqtable.name)
+                    addCell(tr, "td", "Yes", "RT"+k, "", "/static/images/delete.svg", onClickImgDelete);
+                else
+                    addCell(tr, "td", "No ", "RT"+k, "", "/static/images/download.svg", onClickImgDownload);
                 tr.id = k;
                 tbody.appendChild(tr);
             }
@@ -761,7 +861,7 @@ SELECT 1 AS "Result"
             await conn.close();
 
             return true;
-        } 
+        }
         catch (e) {
             var qstatus = document.getElementById('query_status');
             if (preview) {
@@ -960,6 +1060,7 @@ SELECT 1 AS "Result"
             document.onmouseup = () => {
                 //console.log("mouse up");
                 document.onmousemove = document.onmouseup = null;
+                window.dispatchEvent(new Event('resize'));
             }
         }
 

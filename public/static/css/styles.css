@@ -299,3 +299,8 @@ body {
     height: 100%;
     min-width: 30px;
 }
+
+span img {
+    margin-left: 4px;
+    vertical-align: middle;
+}

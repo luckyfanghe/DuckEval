@@ -28,18 +28,25 @@ function load_data_with_sortabletable(rows) {
     Sortable.initTable(document.querySelector('#sortable_table'))
 }
 
-function addCell(tr, type, value="", _class="", onclick=null, img_url=null) {
-    var td = document.createElement(type)
-    td.textContent = value;
-    if (_class) td.classList.add(_class);
-    if (onclick) td.onclick = onclick;
-    if (img_url) {
+function addCell(_parent, _child, _text="", _id="", _class="", _img=null, onclick=null) {
+    var child = document.createElement(_child)
+    child.textContent = _text;
+    if (_id) child.id = _id;
+    if (_class) child.classList.add(_class);
+    if (_img) {
         var img = document.createElement('img'); 
-        img.src = img_url; 
+        img.src = _img; 
         img.style = "width: 16px; cursor: pointer;";
-        td.appendChild(img);
+        if (onclick) img.onclick = onclick;
+        if (_text) {
+            var span = document.createElement('span'); 
+            span.appendChild(img);
+            child.appendChild(span);
+        } else {
+            child.appendChild(img);
+        }
     }
-    tr.appendChild(td);
+    _parent.appendChild(child);
 }
 
 async function init_dexie() {
@@ -136,4 +143,14 @@ async function handleDirectoryEntry( dirHandle, out ) {
             await handleDirectoryEntry( newHandle, newOut );
         }
     }
+}
+
+function formatFileSize(size) {
+    let format_size = size;
+    if (format_size < 1024) return format_size + 'B';
+    format_size /= 1024;
+    if (format_size < 1024) return Math.round(format_size) + 'KB';
+    format_size /= 1024;
+    if (format_size < 1024) return Math.round(format_size) + 'MB';
+    return (format_size / 1024).toFixed(1) + 'GB';
 }
