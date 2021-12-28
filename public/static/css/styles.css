@@ -304,3 +304,15 @@ span img {
     margin-left: 4px;
     vertical-align: middle;
 }
+
+table select {
+    border: none;
+}
+
+table select:focus-visible {
+    outline: 0px;
+}
+  
+table select:focus:not(:focus-visible) {
+    outline: 0px;
+}

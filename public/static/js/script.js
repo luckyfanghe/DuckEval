@@ -47,6 +47,7 @@ function addCell(_parent, _child, _text="", _id="", _class="", _img=null, onclic
         }
     }
     _parent.appendChild(child);
+    return child;
 }
 
 async function init_dexie() {
