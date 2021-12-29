@@ -219,19 +219,12 @@ SELECT 1 AS "Result"
                     await duck_dbs[i].instance.registerFileBuffer(t.parquet.name, parquet_buffer[t.parquet.name]);
                 }
             }
+            if (t.parquet && t.parquet.remote) {
+                for (let i=0; i<duck_dbs.length; i++) {
+                    await duck_dbs[i].instance.registerFileURL(t.parquet.remote, `https://firebasestorage.googleapis.com/v0/b/first-outlet-750.appspot.com/o/${t.parquet.remote}?alt=media`);
+                }
+            }
         }
-
-        // duck_dbs[0].in_using = true;
-        // try {
-        //     for (let t of internal_tables) {
-        //         if (t.parquet && parquet_buffer[t.parquet.name]) {
-        //             await run_only_query(duck_dbs[0].instance, `CREATE TABLE IF NOT EXISTS '${t.table.name}' AS (SELECT * FROM '${t.parquet.name}')`);
-        //         }
-        //     }
-        // } catch (error) {
-        //     console.log(error.message);
-        // }
-        // duck_dbs[0].in_using = false;
     }
 
     async function init_firebase() {
@@ -472,13 +465,17 @@ SELECT 1 AS "Result"
     }
     function onClickPreview() {
         const id = this.parentNode.parentNode.id;
-        const parquet_name = internal_tables[id].parquet.name;
-        const table_name = internal_tables[id].table.name;
-        let elapsed = Date.now();
-        if (parquet_buffer[parquet_name]) {
-            run_query(`SELECT * FROM '${parquet_name}' LIMIT 100`, true);
-        } else if (internal_tables[id].bqtable && internal_tables[id].bqtable.name) {
-            run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[id].bqtable.name}\` LIMIT 100`, true);
+        if (selected_source[internal_tables[id].file.hash] == "Remote BQTable") {
+            run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[id].bqtable.name}\` LIMIT 100`, true);    
+        } else {
+            let query;
+            switch (selected_source[internal_tables[id].file.hash]) {
+                case "Local Table": query = `SELECT * FROM '${internal_tables[id].table.localtable}' LIMIT 100`; break;
+                case "Local File": query = `SELECT * FROM '${internal_tables[id].file.name}' LIMIT 100`; break;
+                case "Local Parquet": query = `SELECT * FROM '${internal_tables[id].parquet.name}' LIMIT 100`; break;
+                case "Remote Parquet": query = `SELECT * FROM '${internal_tables[id].parquet.remote}' LIMIT 100`; break;
+            }
+            if (query) run_query(query, true);
         }
     }
     function onClickRemove() {
@@ -586,18 +583,12 @@ SELECT 1 AS "Result"
         });
     }
     async function onClickUpload() {
+        this.src = "/static/images/reload.gif";
         const id = this.parentNode.parentNode.id;
         const ttype = id.substr(0, 2);
         const tid = id.charAt(id.length-1);
         await export_parquet(duck_dbs[0].instance, internal_tables[tid]);
         upload_parquet(internal_tables[tid]);
-    }
-    function onClickDropDown() {
-        const id = this.parentNode.parentNode.id;
-        const ttype = id.substr(0, 2);
-        const tid = id.charAt(id.length-1);
-        
-        document.getElementById("select_source").classList.remove("hidden");
     }
     async function onClickSync() {
         this.src = "/static/images/reload.gif";
@@ -657,23 +648,37 @@ SELECT 1 AS "Result"
     }
 
     function change_source() {
-        const id = this.id;
-        selected_source[internal_tables[id].parquet.hash] = this.value;
+        selected_source[internal_tables[this.id].file.hash] = this.value;
     }
 
-    function create_dropdown(t, id) {
+    function create_dropdown(t, id, value) {
         let v = t.table.localtable || t.file.handle || (t.parquet && parquet_buffer[t.parquet.name]) || (t.bqtable && t.bqtable.name) || (t.parquet && t.parquet.remote);
         if (!v) return null;
         let td = document.createElement("td");
-        let select = document.createElement("select");
+        let select = document.createElement("select"), option;
         select.onchange = change_source;
         select.id = id;
         td.appendChild(select);
-        if (t.table.localtable) addCell(select, "option", "Local Table");
-        if (t.file.handle) addCell(select, "option", "Local File");
-        if (t.parquet && parquet_buffer[t.parquet.name]) addCell(select, "option", "Local Parquet");
-        if (t.bqtable && t.bqtable.name) addCell(select, "option", "Remote BQTable");
-        if (t.parquet && t.parquet.remote) addCell(select, "option", "Remote Parquet");
+        if (t.table.localtable) {
+            option = addCell(select, "option", "Local Table");
+            if (value == "Local Table") option.selected = "true";
+        } 
+        if (t.file.handle) {
+            option = addCell(select, "option", "Local File");
+            if (value == "Local File") option.selected = "true";
+        } 
+        if (t.parquet && parquet_buffer[t.parquet.name]) {
+            option = addCell(select, "option", "Local Parquet");
+            if (value == "Local Parquet") option.selected = "true";
+        }
+        if (t.bqtable && t.bqtable.name) {
+            option = addCell(select, "option", "Remote BQTable");
+            if (value == "Remote BQTable") option.selected = "true";
+        }
+        if (t.parquet && t.parquet.remote) {
+            option = addCell(select, "option", "Remote Parquet");
+            if (value == "Remote Parquet") option.selected = "true";
+        }
         return td;
     }
 
@@ -730,7 +735,7 @@ SELECT 1 AS "Result"
                     addCell(tr, "td", "Yes", "RP"+k, "", "/static/images/delete.svg", onClickDelete);
                 else {
                     if (t.file.handle || (t.parquet && parquet_buffer[t.parquet.name]))
-                        addCell(tr, "td", "No ", "LP"+k, "", "/static/images/upload.svg", onClickUpload);
+                        addCell(tr, "td", "No ", "RP"+k, "", "/static/images/upload.svg", onClickUpload);
                     else
                         addCell(tr, "td", "No");
                 }
@@ -738,12 +743,12 @@ SELECT 1 AS "Result"
                     addCell(tr, "td", "Yes", "RT"+k, "", "/static/images/delete.svg", onClickDelete);
                 else {
                     if (t.file.handle || (t.parquet && parquet_buffer[t.parquet.name]))
-                        addCell(tr, "td", "No ", "LP"+k, "", "/static/images/upload.svg", onClickUpload);
+                        addCell(tr, "td", "No ", "RT"+k, "", "/static/images/upload.svg", onClickUpload);
                     else
                         addCell(tr, "td", "No");
                 }
 
-                let td = create_dropdown(t, k);
+                let td = create_dropdown(t, k, selected_source[t.file.hash]);
                 if (td)
                     tr.appendChild(td);
                 tr.id = k;
@@ -916,13 +921,13 @@ SELECT 1 AS "Result"
     }
 
     function check_bqtable(data) {
-        const starCountRef = firedb.ref(f_db, 'duckdb/'+data.file.hash);
-        firedb.onValue(starCountRef, (snapshot) => {
+        const dbRef = firedb.ref(f_db);
+        firedb.get(firedb.child(dbRef, 'duckdb/'+data.file.hash)).then((snapshot) => {
             const d = snapshot.val();
             if (d.bqtable && d.bqtable.name) {
                 data.bqtable = d.bqtable;
                 const end_time = Date.now();
-                save_event_logs(EVENT_TYPE_FILE, end_time-d.bqtable.bq_elapsed, end_time, `Export "${data.parquet.name}" to remote table`);
+                save_event_logs(EVENT_TYPE_FILE, end_time-d.bqtable.bq_elapsed, end_time, `Created remote BQtable "${d.bqtable.name}" from remote parquet "${data.parquet.remote}"`);
                 refresh_tables();
             } else {
                 setTimeout(check_bqtable, 2000, data);
@@ -931,13 +936,14 @@ SELECT 1 AS "Result"
     }
 
     function upload_parquet(data) {
-        const storageRef = firestorage.ref(f_storage, data.parquet.name);
+        const storageRef = firestorage.ref(f_storage, `${data.file.hash}.parquet`);
         const start_time = Date.now();
         firestorage.uploadBytes(storageRef, parquet_buffer[data.parquet.name])
         .then((res) => {
-            data.parquet.remote = data.parquet.name;
+            console.log(res);
+            data.parquet.remote = `${data.file.hash}.parquet`;
             data.table.gcs_elapsed = ((Date.now() - start_time) / 1000).toFixed(2);
-            save_event_logs(EVENT_TYPE_FILE, start_time, Date.now(), `Export "${data.parquet.name}" to remote parquet`);
+            save_event_logs(EVENT_TYPE_FILE, start_time, Date.now(), `Uploaded "${data.parquet.name}" to remote parquet "${data.parquet.remote}"`);
             refresh_tables();
             firedb.set(firedb.ref(f_db, 'duckdb/'+data.file.hash), data);
             setTimeout(check_bqtable, 2000, data);
@@ -952,15 +958,16 @@ SELECT 1 AS "Result"
             let elapsed = Date.now();
             if (!data.parquet || !parquet_buffer[data.parquet.name]) {
                 const conn = await db.connect();
-                const query = `COPY ${data.table.name} TO '/tmp/${data.file.hash}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`;
+                const query = `COPY ${data.table.name} TO '/tmp/${data.table.name}.parquet' (FORMAT 'PARQUET', CODEC 'GZIP')`;
                 await conn.query(query);
                 await conn.close();
                 
                 data.parquet = {
-                    name: `${data.file.hash}.parquet`,
+                    name: `${data.table.name}.parquet`,
                     elapsed: ((Date.now() - elapsed) / 1000).toFixed(2)
                 }
-                save_event_logs(EVENT_TYPE_FILE, elapsed, Date.now(), `Export parquet file "${data.parquet.name}"`, query);
+                save_event_logs(EVENT_TYPE_FILE, elapsed, Date.now(), `Exported parquet file "${data.parquet.name}"`, query);
+                refresh_tables();
                 
                 parquet_buffer[data.parquet.name] = await db.copyFileToBuffer(`/tmp/${data.parquet.name}`);
                 
