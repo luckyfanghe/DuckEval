@@ -307,6 +307,7 @@ span img {
 
 table select {
     border: none;
+    background: transparent;
 }
 
 table select:focus-visible {
