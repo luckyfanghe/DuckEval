@@ -73,6 +73,9 @@ SELECT 1 AS "Result"
                 <div class="inner two"></div>
                 <div class="inner three"></div>
             </div> -->
+            <select id="select_fields" style="width: 120px;"></select>
+            <input id="txt_field_value">
+            <button onclick="change_table()">Change</button>
             <section id="files_section">
                 <div class="tab">
                     <button class="tablinks" onclick="showTable(event, 't_files')">Files</button>
@@ -157,6 +160,7 @@ SELECT 1 AS "Result"
     window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-storage.js`);
     window.firedb = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-database.js`);
     window.fireFuncs = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-functions.js`);
+    window.pyjs = await import("./static/js/pyjs/index.js");
 </script>
 <script src="./static/js/xdialog.3.4.0.min.js"></script>
 <script>
@@ -178,6 +182,7 @@ SELECT 1 AS "Result"
     var ctidx; // current table index
     var f_storage, f_db, i_db;
     var f_timerid;
+    var Y, ydoc = {}, ydoc_chunk_size = 1000;
     var bqtoken;
     var edit_start_time;
   
@@ -235,6 +240,8 @@ SELECT 1 AS "Result"
             const dbRef = firedb.ref(f_db);
             const snapshot = await firedb.get(firedb.child(dbRef, 'duckdb'));
 
+            Y = window.pyjs;
+
             if (snapshot.exists()) {
                 data = snapshot.val()
                 for (k in data) {
@@ -245,6 +252,8 @@ SELECT 1 AS "Result"
                     data[k].table.localtable = '';
                     data[k].table.icon = TABLE_ICON_PREVIEW;
                     internal_tables.push(data[k]);
+
+                    ydoc[data[k].table.name] = {0 : new Y.Doc()};
                 }
                 setTimeout(register_parquet_buffer, 1000);
             } else {
@@ -252,7 +261,10 @@ SELECT 1 AS "Result"
             }
             refresh_tables();
 
-            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/'), eventhandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/update'), eventUpdateHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/offline_update'), eventOfflineUpdateHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/offline_diff'), eventOfflineDiffHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/cell'), eventCellHandler);
 
             return;
         } catch (e) {
@@ -261,15 +273,56 @@ SELECT 1 AS "Result"
         setTimeout(init_firebase, 200);
     }
 
-    function eventhandler(ev) {
+    function eventCellHandler(ev) {
+        clients.cells = ev.val();
+    }
+
+    function eventOfflineDiffHandler(ev) {
         const data = ev.val();
-        if (data.update.clientId != client_id) {
-            if (ctidx && data.update.tableName == internal_tables[ctidx].table.name) {
-                const f = data.update.field, pk = internal_tables[ctidx].table.pk;
+        for (let id in data) {
+            if (id != client_id) {
+                for (let tname in data[id]) {
+                    for (k in data[id]) {
+                        Y.applyUpdate(ydoc[tname][k], data[id][tname][k]);
+                    }
+                }
+            }
+        }
+    }
+
+    function eventOfflineUpdateHandler(ev) {
+        const updates = ev.val();
+        var changed_data = {};
+        for (let id in updates) {
+            if (id != client_id) {
+                let data = updates[id];
+                for (let tname in data) {
+                    for (let k in data[tname]) {
+                        if (!ydoc[tname][k])
+                            ydoc[tname][k] = new Y.Doc();
+                        
+                        doc = ydoc[tname][k];
+                        if (!changed_data[id]) {
+                            changed_data[id] = {};
+                            changed_data[id][tname] = {};
+                        }
+                        changed_data[id][tname][k] = Y.encodeStateAsUpdate(doc, data[tname][k]);
+                    }
+                }
+            }
+        }
+        firedb.set(firedb.ref(f_db, `events/offline_diff/${client_id}`), changed_data);
+    }
+
+    function eventUpdateHandler(ev) {
+        const data = ev.val();
+        if (data.clientId != client_id) {
+            if (ctidx && data.tableName == internal_tables[ctidx].table.name) {
+                const f = data.field, pk = internal_tables[ctidx].table.pk;
                 for (let i=0; i<canvasgrid.data.length; i++) {
-                    if (canvasgrid.data[i][pk] == data.update.row[pk]) {
-                        canvasgrid.data[i][f] = data.update.newValue;
-                        save_logs(EVENT_TYPE_TABLE, data.update.edit_start_time, data.update.edit_end_time, `Table "${internal_tables[ctidx].table.name}" was changed by ${data.update.clientId}`);
+                    if (canvasgrid.data[i][pk] == data.row[pk]) {
+                        canvasgrid.data[i][f] = data.newValue;
+                        save_logs(EVENT_TYPE_TABLE, data.edit_start_time, data.edit_end_time, `Table "${internal_tables[ctidx].table.name}" was changed by ${data.clientId}`);
                         break;
                     }
                 }
@@ -292,6 +345,17 @@ SELECT 1 AS "Result"
     function onEndEditTable(e) {
         if (e.oldValue != e.newValue && ctidx && internal_tables[ctidx].table.pk) {
             let edit_end_time = Date.now();
+            yarray[internal_tables[ctidx].table.name].push([[
+                client_id,
+                internal_tables[ctidx].table.name,
+                e.cell.header.name,
+                e.newValue,
+                edit_start_time,
+                edit_end_time
+            ]]);
+
+            console.log(ymap[internal_tables[ctidx].table.name].toJSON());
+
             firedb.set(firedb.ref(f_db, 'events/update'), {
                 clientId: client_id,
                 tableName: internal_tables[ctidx].table.name,
@@ -543,6 +607,15 @@ SELECT 1 AS "Result"
             if (query) run_query(query, true);
         }
         ctidx = id;
+        var select = document.getElementById("select_fields");
+        while (select.hasChildNodes()) {
+            select.removeChild(select.lastChild);
+        }
+        for (f of internal_tables[id].table.fields) {
+            if (f != internal_tables[id].table.pk) {
+                option = addCell(select, "option", f);
+            }
+        }
     }
     function onClickRemove() {
         const id = this.parentNode.parentNode.id;
@@ -1313,6 +1386,69 @@ SELECT 1 AS "Result"
 
         await handleDirectoryEntry( dirHandle, out );
         console.log( out );
+    }
+
+    async function change_table() {
+        if (ctidx) {
+            document.getElementById("loader").classList.add("show_block");
+
+            const select_field = document.getElementById("select_fields").value;
+            const field_value = document.getElementById("txt_field_value").value;
+
+            const conn = await duck_dbs[0].instance.connect();
+            const query = `SELECT * FROM \"${internal_tables[ctidx].parquet.name}\"`;
+            const result = await conn.send(query);
+
+            let batch = (await result.next()).value;
+            const field_names = []
+            for (let field of batch.schema.fields) {
+                field_names.push(field.name)
+            }
+
+            const data = [];
+            const tname = internal_tables[ctidx].table.name;
+            
+            while (batch.length > 0) {
+                for (let row of batch) {
+                    let id, r = {}, yarray;
+                    for (let f of field_names) {
+                        if (f == select_field) {
+                            r[f] = field_value;
+                        } else {
+                            r[f] = row[f];
+                        }
+                        if (f == internal_tables[ctidx].table.pk)
+                            id = row[f];
+                    }
+                    data.push(r);
+        
+                    let di = Math.floor(id/ydoc_chunk_size);
+                    if (!ydoc[tname][di])
+                        ydoc[tname][di] = new Y.Doc();
+
+                    doc = ydoc[tname][di];
+                    yarray = doc.getArray(`${id}_${select_field}`);
+                    yarray.push([field_value]);
+                }
+                batch = (await result.next()).value;
+                if (!batch) break;
+            }
+            await conn.close();
+            canvasgrid.data = data;
+            document.getElementById("loader").classList.remove("show_block");
+            uploadYData(tname);
+        }
+    }
+
+    async function uploadYData(tname) {
+        if (navigator.onLine) {
+            var changed_data = {};
+            for (let k in ydoc[tname]) {
+                changed_data[k] = Y.encodeStateVector(ydoc[tname][k]);
+            }
+
+            firedb.set(firedb.ref(f_db, `events/offline_update/${client_id}/${tname}`), changed_data);
+        }
     }
 
     // A function is used for dragging and moving
