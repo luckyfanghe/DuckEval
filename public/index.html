@@ -157,6 +157,7 @@ SELECT 1 AS "Result"
     window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-storage.js`);
     window.firedb = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-database.js`);
     window.fireFuncs = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-functions.js`);
+    window.pyjs = await import("./static/js/pyjs/index.js");
 </script>
 <script src="./static/js/xdialog.3.4.0.min.js"></script>
 <script>
@@ -169,6 +170,8 @@ SELECT 1 AS "Result"
     const TID_FILES = "t_files", TID_TABLES = "t_tables", TID_LOGS = "t_logs", TID_ALL = "t_all";
     const EVENT_TYPE_TABLE = 0, EVENT_TYPE_FILE = 1, EVENT_TYPE_QUERY = 2;
     const EVENT_TYPES = ["TABLE", "FILE", "QUERY"]
+    const CELL_COLORS = ['#aeedcf', '#c1e993', '#7be7dd', '#ffbc5a', '#c6cfff', '#f3e781', '#c3f376']
+
     var duck_dbs = [], duckdb_wasmURL, duckdb_pThreadURL;
     var sql_editer, sql_parser;
     var canvasgrid;
@@ -176,10 +179,13 @@ SELECT 1 AS "Result"
     var client_id;
     var internal_tables = [], event_logs = [], parquet_buffer = {}, selected_source = {};
     var ctidx; // current table index
-    var f_storage, f_db, i_db;
+    var f_storage, f_db, f_funcs, i_db;
     var f_timerid;
+    var Y;
     var bqtoken;
     var edit_start_time;
+    var grid_active_rowIndex = -1, grid_active_columnIndex = -1;
+    var clients = {};
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -252,7 +258,8 @@ SELECT 1 AS "Result"
             }
             refresh_tables();
 
-            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/'), eventhandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/update'), eventUpdateHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/cell'), eventCellHandler);
 
             return;
         } catch (e) {
@@ -261,15 +268,19 @@ SELECT 1 AS "Result"
         setTimeout(init_firebase, 200);
     }
 
-    function eventhandler(ev) {
+    function eventCellHandler(ev) {
+        clients.cells = ev.val();
+    }
+
+    function eventUpdateHandler(ev) {
         const data = ev.val();
-        if (data.update.clientId != client_id) {
-            if (ctidx && data.update.tableName == internal_tables[ctidx].table.name) {
-                const f = data.update.field, pk = internal_tables[ctidx].table.pk;
+        if (data.clientId != client_id) {
+            if (ctidx && data.tableName == internal_tables[ctidx].table.name) {
+                const f = data.field, pk = internal_tables[ctidx].table.pk;
                 for (let i=0; i<canvasgrid.data.length; i++) {
-                    if (canvasgrid.data[i][pk] == data.update.row[pk]) {
-                        canvasgrid.data[i][f] = data.update.newValue;
-                        save_logs(EVENT_TYPE_TABLE, data.update.edit_start_time, data.update.edit_end_time, `Table "${internal_tables[ctidx].table.name}" was changed by ${data.update.clientId}`);
+                    if (canvasgrid.data[i][pk] == data.row[pk]) {
+                        canvasgrid.data[i][f] = data.newValue;
+                        save_logs(EVENT_TYPE_TABLE, data.edit_start_time, data.edit_end_time, `Table "${internal_tables[ctidx].table.name}" was changed by ${data.clientId}`);
                         break;
                     }
                 }
@@ -286,6 +297,7 @@ SELECT 1 AS "Result"
             }
 
             edit_start_time = Date.now();
+            onClickGrid(e);
         }
     }
 
@@ -424,7 +436,48 @@ SELECT 1 AS "Result"
         canvasgrid.style.width = '100%';
         canvasgrid.addEventListener('beforebeginedit', onBeginEditTable);
         canvasgrid.addEventListener('beforeendedit', onEndEditTable);
+        canvasgrid.addEventListener('rendercell', onRenderCell);
+        canvasgrid.addEventListener('click', onClickGrid);
     };
+
+    window.onbeforeunload = function (event) {
+        firedb.set(firedb.ref(f_db, 'events/cell/'+ client_id), null);
+
+        // var message = 'Important: Please click on \'Save\' button to leave this page.';
+        // if (typeof event == 'undefined') {
+        //     event = window.event;
+        // }
+        // if (event) {
+        //     event.returnValue = message;
+        // }
+        // return message;
+    };
+
+    function onClickGrid(e) {
+        if (ctidx && e.cell.rowIndex !== undefined && e.cell.rowIndex != -1 && e.cell.columnIndex != -1) {
+            if (e.cell.rowIndex != grid_active_rowIndex || e.cell.columnIndex != grid_active_columnIndex) {
+                grid_active_rowIndex = e.cell.rowIndex;
+                grid_active_columnIndex = e.cell.columnIndex;
+                firedb.set(firedb.ref(f_db, 'events/cell/'+client_id), {
+                    tableIndex: ctidx,
+                    rowIndex: grid_active_rowIndex,
+                    columnIndex: grid_active_columnIndex
+                });
+            }
+        }
+    }
+
+    function onRenderCell(e) {
+        if (ctidx && clients.cells) {
+            let i = 0;
+            for (let k in clients.cells) {
+                if (k != client_id && clients.cells[k].tableIndex == ctidx && e.cell.rowIndex == clients.cells[k].rowIndex && e.cell.columnIndex == clients.cells[k].columnIndex) {
+                    e.ctx.fillStyle = CELL_COLORS[i % CELL_COLORS.length];
+                }
+                i++;
+            }
+        }
+    }
 
     const qfile_input = document.getElementById("qfile");
     qfile_input.addEventListener("change", registerFile, false);
