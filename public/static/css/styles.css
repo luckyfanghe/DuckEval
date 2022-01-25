@@ -317,3 +317,7 @@ table select:focus-visible {
 table select:focus:not(:focus-visible) {
     outline: 0px;
 }
+
+#t_tables select {
+    max-width: 50px;
+}

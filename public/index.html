@@ -157,7 +157,6 @@ SELECT 1 AS "Result"
     window.firestorage = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-storage.js`);
     window.firedb = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-database.js`);
     window.fireFuncs = await import(`https://www.gstatic.com/firebasejs/9.4.0/firebase-functions.js`);
-    window.pyjs = await import("./static/js/pyjs/index.js");
 </script>
 <script src="./static/js/xdialog.3.4.0.min.js"></script>
 <script>
@@ -181,7 +180,6 @@ SELECT 1 AS "Result"
     var ctidx; // current table index
     var f_storage, f_db, f_funcs, i_db;
     var f_timerid;
-    var Y;
     var bqtoken;
     var edit_start_time;
     var grid_active_rowIndex = -1, grid_active_columnIndex = -1;
@@ -324,6 +322,12 @@ SELECT 1 AS "Result"
     }
     async function load() {
         setTimeout(init_firebase, 200);
+        
+        client_id = localStorage.getItem('client_id');
+        if (!client_id) {
+            client_id = Math.random().toString(36).substr(2);
+            localStorage.setItem('client_id', client_id);
+        }
 
         // await idb.deleteDB('DuckParquet');
         i_db = await idb.openDB('DuckParquet', 2, {
@@ -389,12 +393,6 @@ SELECT 1 AS "Result"
         qstatus.innerHTML = "&nbsp;";
         document.title = `DuckDB - ${libraryVersion}`;
         getBQToken();
-
-        client_id = localStorage.getItem('client_id');
-        if (!client_id) {
-            client_id = Math.random().toString(36).substr(2);
-            localStorage.setItem('client_id', client_id);
-        }
     }
 
     window.onload = function () { 
@@ -1352,7 +1350,7 @@ SELECT 1 AS "Result"
                 canvasgrid.data = data;
                 save_event_logs(EVENT_TYPE_QUERY, `Run bquery`, start_time, end_time, query);
             }
-        } catch (error) {
+        } catch (e) {
             qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
         }
 
@@ -1380,11 +1378,12 @@ SELECT 1 AS "Result"
         function onMouseDown(e)
         {
             //console.log("mouse down: " + e.clientX);
-            md = {e,
-                offsetLeft:  element.offsetLeft,
-                offsetTop:   element.offsetTop,
-                firstWidth:  first.offsetWidth,
-                secondWidth: second.offsetWidth
+            md = {  
+                    e,
+                    offsetLeft:  element.offsetLeft,
+                    offsetTop:   element.offsetTop,
+                    firstWidth:  first.offsetWidth,
+                    secondWidth: second.offsetWidth
                 };
 
             document.onmousemove = onMouseMove;
@@ -1414,5 +1413,8 @@ SELECT 1 AS "Result"
         }
     }
     dragElement( document.getElementById("separator"), "H" );
+
+    window.addEventListener('offline', function(e) { console.log('offline'); });
+    window.addEventListener('online', function(e) { console.log('online'); });
 </script>
 </html>
