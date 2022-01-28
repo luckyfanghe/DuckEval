@@ -20,6 +20,9 @@
     <script src="./static/js/sortable.js"></script>
     <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/script.js"></script>
+    <script src="./static/js/zip/rawdeflate.js"></script>
+    <script src="./static/js/zip/rawinflate.js"></script>
+    <script src="./static/js/zip/base64.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
     <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
     <!-- <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script> -->
@@ -73,6 +76,9 @@ SELECT 1 AS "Result"
                 <div class="inner two"></div>
                 <div class="inner three"></div>
             </div> -->
+            <select id="select_fields" style="width: 120px;"></select>
+            <input id="txt_field_value">
+            <button onclick="change_table()">Change</button>
             <section id="files_section">
                 <div class="tab">
                     <button class="tablinks" onclick="showTable(event, 't_files')">Files</button>
@@ -178,12 +184,12 @@ SELECT 1 AS "Result"
     var client_id;
     var internal_tables = [], event_logs = [], parquet_buffer = {}, selected_source = {};
     var ctidx; // current table index
+    var qtname; // queried table name
     var f_storage, f_db, f_funcs, i_db;
-    var f_timerid;
     var bqtoken;
     var edit_start_time;
     var grid_active_rowIndex = -1, grid_active_columnIndex = -1;
-    var clients = {};
+    var clients = {}, sharedData = {};
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -257,6 +263,7 @@ SELECT 1 AS "Result"
             refresh_tables();
 
             firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/update'), eventUpdateHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/offline_update'), eventOfflineUpdateHandler);
             firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/cell'), eventCellHandler);
 
             return;
@@ -268,6 +275,37 @@ SELECT 1 AS "Result"
 
     function eventCellHandler(ev) {
         clients.cells = ev.val();
+        canvasgrid.draw();
+    }
+
+    function eventOfflineUpdateHandler(ev) {
+        const updates = ev.val();
+        if (!updates) return;
+
+        if (updates[client_id] && Object.keys(sharedData).length == 0) {
+            sharedData = JSON.parse(Base64.btou(RawDeflate.inflate(Base64.fromBase64(updates[client_id]))));
+        }
+        
+        for (let id in updates) {
+            if (id != client_id) {
+                let tables = JSON.parse(Base64.btou(RawDeflate.inflate(Base64.fromBase64(updates[id]))));
+                for (let t in tables) {
+                    for (let k in tables[t]) {
+                        for (let f in tables[t][k]) {
+                            if (sharedData[t] && sharedData[t][k] && sharedData[t][k][f]) {
+                                if (sharedData[t][k][f][1] < tables[t][k][f][1]) 
+                                    sharedData[t][k][f] = tables[t][k][f];
+                            } else {
+                                if (!sharedData[t]) sharedData[t] = {};
+                                if (!sharedData[t][k]) sharedData[t][k] = {};
+                                sharedData[t][k][f] = tables[t][k][f];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        update_canvasgrid();
     }
 
     function eventUpdateHandler(ev) {
@@ -282,6 +320,7 @@ SELECT 1 AS "Result"
                         break;
                     }
                 }
+                canvasgrid.draw();
             }
         }
     }
@@ -320,6 +359,7 @@ SELECT 1 AS "Result"
         .then(res => res.json())
         .then(data => {bqtoken = data.Authorization;})
     }
+
     async function load() {
         setTimeout(init_firebase, 200);
         
@@ -506,6 +546,7 @@ SELECT 1 AS "Result"
             for(let i=0; i<duck_dbs.length; i++) {
                 duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
             }
+            qtname = null;
             const preview_start_time = Date.now();
             const query = `SELECT * FROM '${this.files[0].name}' LIMIT 100`;
             const preview = await run_query(query, true);
@@ -580,20 +621,29 @@ SELECT 1 AS "Result"
         });
     }
     function onClickPreview() {
-        const id = this.parentNode.parentNode.id;
-        if (selected_source[internal_tables[id].file.hash] == "Remote BQTable") {
-            run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[id].bqtable.name}\` LIMIT 100`, true);    
+        ctidx = this.parentNode.parentNode.id;
+        qtname = internal_tables[ctidx].table.name;
+        if (selected_source[internal_tables[ctidx].file.hash] == "Remote BQTable") {
+            run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[ctidx].bqtable.name}\` LIMIT 100`, true);    
         } else {
             let query;
-            switch (selected_source[internal_tables[id].file.hash]) {
-                case "Local Table": query = `SELECT * FROM '${internal_tables[id].table.localtable}' LIMIT 100`; break;
-                case "Local File": query = `SELECT * FROM '${internal_tables[id].file.name}' LIMIT 100`; break;
-                case "Local Parquet": query = `SELECT * FROM '${internal_tables[id].parquet.name}' LIMIT 100`; break;
-                case "Remote Parquet": query = `SELECT * FROM '${internal_tables[id].parquet.remote}' LIMIT 100`; break;
+            switch (selected_source[internal_tables[ctidx].file.hash]) {
+                case "Local Table": query = `SELECT * FROM '${internal_tables[ctidx].table.localtable}' LIMIT 100`; break;
+                case "Local File": query = `SELECT * FROM '${internal_tables[ctidx].file.name}' LIMIT 100`; break;
+                case "Local Parquet": query = `SELECT * FROM '${internal_tables[ctidx].parquet.name}' LIMIT 100`; break;
+                case "Remote Parquet": query = `SELECT * FROM '${internal_tables[ctidx].parquet.remote}' LIMIT 100`; break;
             }
             if (query) run_query(query, true);
         }
-        ctidx = id;
+        var select = document.getElementById("select_fields");
+        while (select.hasChildNodes()) {
+            select.removeChild(select.lastChild);
+        }
+        for (f of internal_tables[ctidx].table.fields) {
+            if (f != internal_tables[ctidx].table.pk) {
+                option = addCell(select, "option", f);
+            }
+        }
     }
     function onClickRemove() {
         const id = this.parentNode.parentNode.id;
@@ -990,6 +1040,7 @@ SELECT 1 AS "Result"
 
     function onClickPlay() {
         cancel_query = false;
+        qtname = null;
 
         let selected = sql_editer.getSelection();
         if (selected) {
@@ -1252,9 +1303,13 @@ SELECT 1 AS "Result"
             first_result = true
             while(batch.length > 0 && !cancel_query) {
                 for (let row of batch) {
-                    let r = {}
+                    let r = {}, pk_value = row[internal_tables[ctidx].table.pk];
                     for (let f of field_names) {
                         r[f] = row[f];
+                        if (qtname && sharedData[qtname]) {
+                            if (sharedData[qtname][pk_value] && sharedData[qtname][pk_value][sharedData[qtname]["fields"][f]])
+                                r[f] = sharedData[qtname][pk_value][sharedData[qtname]["fields"][f]][0];
+                        }
                     }
                     data.push(r)
                 }
@@ -1349,6 +1404,7 @@ SELECT 1 AS "Result"
                 }
                 canvasgrid.data = data;
                 save_event_logs(EVENT_TYPE_QUERY, `Run bquery`, start_time, end_time, query);
+                update_canvasgrid();
             }
         } catch (e) {
             qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
@@ -1364,6 +1420,82 @@ SELECT 1 AS "Result"
 
         await handleDirectoryEntry( dirHandle, out );
         console.log( out );
+    }
+
+    function update_canvasgrid() {
+        if (ctidx && sharedData[internal_tables[ctidx].table.name]) {
+            const tname = internal_tables[ctidx].table.name, pk_field = internal_tables[ctidx].table.pk;
+            for (let i=0; i<canvasgrid.data.length; i++) {
+                let pk_value = canvasgrid.data[i][pk_field];
+                for (let f in canvasgrid.data[i]) {
+                    if (tname && sharedData[tname]) {
+                        if (sharedData[tname][pk_value] && sharedData[tname][pk_value][sharedData[tname]["fields"][f]])
+                            canvasgrid.data[i][f] = sharedData[tname][pk_value][sharedData[tname]["fields"][f]][0];
+                    }
+                }
+            }
+            canvasgrid.draw();
+        }
+    }
+
+    async function change_table() {
+        if (ctidx) {
+            document.getElementById("loader").classList.add("show_block");
+
+            const select_field = document.getElementById("select_fields").value;
+            const field_value = document.getElementById("txt_field_value").value;
+
+            const conn = await duck_dbs[0].instance.connect();
+            const query = `SELECT * FROM \"${internal_tables[ctidx].parquet.name}\"`;
+            const result = await conn.send(query);
+
+            let batch = (await result.next()).value;
+            const field_names = []
+            for (let field of batch.schema.fields) {
+                field_names.push(field.name)
+            }
+
+            const data = [];
+            const tname = internal_tables[ctidx].table.name;
+            
+            if (!sharedData[tname]) sharedData[tname] = {};
+            if (!sharedData[tname]["fields"]) {
+                sharedData[tname]["fields"] = {}
+                for (let i=0; i<internal_tables[ctidx].table.fields.length; i++)
+                    sharedData[tname]["fields"][internal_tables[ctidx].table.fields[i]] = i;
+            }
+            const fields = sharedData[tname]["fields"], pk_field = internal_tables[ctidx].table.pk;
+            while (batch.length > 0) {
+                for (let row of batch) {
+                    let r = {};
+                    for (let f of field_names) {
+                        if (f == select_field) {
+                            r[f] = field_value;
+                        } else {
+                            r[f] = row[f];
+                        }
+                    }
+                    data.push(r);
+                    let pk_value = r[pk_field];
+                    if (!sharedData[tname][pk_value]) sharedData[tname][pk_value] = {};
+                    sharedData[tname][pk_value][fields[select_field]] = [field_value, Date.now()];
+                }
+                batch = (await result.next()).value;
+                if (!batch) break;
+            }
+            await conn.close();
+            canvasgrid.data = data;
+            document.getElementById("loader").classList.remove("show_block");
+            uploadSharedData(tname);
+        }
+    }
+
+    async function uploadSharedData(tname) {
+        if (navigator.onLine) {
+            const data = {};
+            data[client_id] = Base64.toBase64(RawDeflate.deflate(Base64.utob(JSON.stringify(sharedData))));
+            firedb.set(firedb.ref(f_db, `events/offline_update`), data);
+        }
     }
 
     // A function is used for dragging and moving
