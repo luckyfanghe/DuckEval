@@ -20,11 +20,9 @@
     <script src="./static/js/sortable.js"></script>
     <script src="./static/js/pgsql_parser.js"></script>
     <script src="./static/js/script.js"></script>
-    <script src="./static/js/zip/rawdeflate.js"></script>
-    <script src="./static/js/zip/rawinflate.js"></script>
-    <script src="./static/js/zip/base64.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
     <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
+    <script src="https://cdn.jsdelivr.net/pako/1.0.3/pako.min.js"></script>
     <!-- <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script> -->
     <!-- <script src="./static/js/localforage.js"></script> -->
 </head>
@@ -283,18 +281,24 @@ SELECT 1 AS "Result"
         if (!updates) return;
 
         if (updates[client_id] && Object.keys(sharedData).length == 0) {
-            sharedData = JSON.parse(Base64.btou(RawDeflate.inflate(Base64.fromBase64(updates[client_id]))));
+            sharedData = JSON.parse(pako.inflate(atob(updates[client_id]), { to: 'string' }));
         }
         
         for (let id in updates) {
             if (id != client_id) {
-                let tables = JSON.parse(Base64.btou(RawDeflate.inflate(Base64.fromBase64(updates[id]))));
+                let tables = JSON.parse(pako.inflate(atob(updates[id]), { to: 'string' }));
                 for (let t in tables) {
+                    let log = true;
                     for (let k in tables[t]) {
                         for (let f in tables[t][k]) {
                             if (sharedData[t] && sharedData[t][k] && sharedData[t][k][f]) {
-                                if (sharedData[t][k][f][1] < tables[t][k][f][1]) 
+                                if (sharedData[t][k][f][1] < tables[t][k][f][1]) {
+                                    if (log) {
+                                        console.log(Date.now() - tables[t][k][f][1]);
+                                        log = false;
+                                    }
                                     sharedData[t][k][f] = tables[t][k][f];
+                                }
                             } else {
                                 if (!sharedData[t]) sharedData[t] = {};
                                 if (!sharedData[t][k]) sharedData[t][k] = {};
@@ -1493,7 +1497,7 @@ SELECT 1 AS "Result"
     async function uploadSharedData(tname) {
         if (navigator.onLine) {
             const data = {};
-            data[client_id] = Base64.toBase64(RawDeflate.deflate(Base64.utob(JSON.stringify(sharedData))));
+            data[client_id] = btoa(pako.deflate(JSON.stringify(sharedData), { to: 'string' }));
             firedb.set(firedb.ref(f_db, `events/offline_update`), data);
         }
     }
