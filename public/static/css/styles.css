@@ -321,3 +321,7 @@ table select:focus:not(:focus-visible) {
 #t_tables select {
     max-width: 50px;
 }
+
+table .selected {
+    background: #e5e5e5;
+}

@@ -187,7 +187,7 @@ SELECT 1 AS "Result"
     var bqtoken;
     var edit_start_time;
     var grid_active_rowIndex = -1, grid_active_columnIndex = -1;
-    var clients = {}, sharedData = {};
+    var clients = {}, sharedData = {}, pending_tables = {};
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -358,6 +358,25 @@ SELECT 1 AS "Result"
         }
     }
 
+    function onAfterPaste(e) {
+        if (!ctidx) return;
+        
+        const tname = internal_tables[ctidx].table.name;
+        initSharedData(tname);
+
+        const fields = sharedData[tname]["fields"], pk_field = internal_tables[ctidx].table.pk;
+        const schema = canvasgrid.schema;
+        let pk_value, f;
+        for (c of e.cells) {
+            row = canvasgrid.data[c[0]];
+            pk_value = row[pk_field];
+            if (!sharedData[tname][pk_value]) sharedData[tname][pk_value] = {};
+            f = schema[c[1]].name;
+            sharedData[tname][pk_value][fields[f]] = [row[f], Date.now()];
+        }
+        uploadSharedData(tname);
+    }
+
     function getBQToken() {
         fetch("https://us-central1-first-outlet-750.cloudfunctions.net/bqtoken")
         .then(res => res.json())
@@ -478,6 +497,7 @@ SELECT 1 AS "Result"
         canvasgrid.style.width = '100%';
         canvasgrid.addEventListener('beforebeginedit', onBeginEditTable);
         canvasgrid.addEventListener('beforeendedit', onEndEditTable);
+        canvasgrid.addEventListener('afterpaste', onAfterPaste);
         canvasgrid.addEventListener('rendercell', onRenderCell);
         canvasgrid.addEventListener('click', onClickGrid);
     };
@@ -648,6 +668,7 @@ SELECT 1 AS "Result"
                 option = addCell(select, "option", f);
             }
         }
+        refresh_tables(TID_FILES);
     }
     function onClickRemove() {
         const id = this.parentNode.parentNode.id;
@@ -924,6 +945,8 @@ SELECT 1 AS "Result"
     }
 
     function refresh_tables(tid = TID_ALL) {
+        if (!ctidx && internal_tables.length > 0)
+            ctidx = 0;
         if (tid == TID_ALL || tid == TID_FILES) {
             var tbody = document.getElementById(`${TID_FILES}_tbody`);
             while (tbody.hasChildNodes()) {
@@ -993,6 +1016,8 @@ SELECT 1 AS "Result"
                 if (td)
                     tr.appendChild(td);
                 tr.id = k;
+                if (k == ctidx) tr.classList.add('selected');
+                // tr.onclick = onClickTable;
                 tbody.appendChild(tr);
             }
             Sortable.initTable(document.getElementById(TID_FILES));
@@ -1039,6 +1064,13 @@ SELECT 1 AS "Result"
                 tbody.appendChild(tr);
             }
             Sortable.initTable(document.getElementById(TID_LOGS));
+        }
+    }
+
+    function onClickTable(e) {
+        if (e.target.localName == 'td' && ctidx != e.currentTarget.id) {
+            ctidx = parseInt(e.currentTarget.id);
+            refresh_tables(TID_FILES);
         }
     }
 
@@ -1442,6 +1474,20 @@ SELECT 1 AS "Result"
         }
     }
 
+    function initSharedData(tablename) {
+        if (!sharedData[tablename]) sharedData[tablename] = {};
+        if (!sharedData[tablename]["fields"]) {
+            sharedData[tablename]["fields"] = {}
+            for (let t of internal_tables) {
+                if (t.table.name == tablename) {
+                    for (let i=0; i<t.table.fields.length; i++)
+                        sharedData[tablename]["fields"][t.table.fields[i]] = i;
+                    break;
+                }
+            }
+        }
+    }
+
     async function change_table() {
         if (ctidx) {
             document.getElementById("loader").classList.add("show_block");
@@ -1462,12 +1508,8 @@ SELECT 1 AS "Result"
             const data = [];
             const tname = internal_tables[ctidx].table.name;
             
-            if (!sharedData[tname]) sharedData[tname] = {};
-            if (!sharedData[tname]["fields"]) {
-                sharedData[tname]["fields"] = {}
-                for (let i=0; i<internal_tables[ctidx].table.fields.length; i++)
-                    sharedData[tname]["fields"][internal_tables[ctidx].table.fields[i]] = i;
-            }
+            initSharedData(tname);
+            
             const fields = sharedData[tname]["fields"], pk_field = internal_tables[ctidx].table.pk;
             while (batch.length > 0) {
                 for (let row of batch) {
@@ -1499,6 +1541,16 @@ SELECT 1 AS "Result"
             const data = {};
             data[client_id] = btoa(pako.deflate(JSON.stringify(sharedData), { to: 'string' }));
             firedb.set(firedb.ref(f_db, `events/offline_update`), data);
+            pending_tables[tname] = false;
+        } else {
+            pending_tables[tname] = true;
+        }
+    }
+
+    function precessPendingTables() {
+        for (tname in pending_tables) {
+            if (pending_tables[tname])
+                uploadSharedData(tname);
         }
     }
 
@@ -1550,7 +1602,6 @@ SELECT 1 AS "Result"
     }
     dragElement( document.getElementById("separator"), "H" );
 
-    window.addEventListener('offline', function(e) { console.log('offline'); });
-    window.addEventListener('online', function(e) { console.log('online'); });
+    window.addEventListener('online', precessPendingTables);
 </script>
 </html>
