@@ -22,6 +22,7 @@
     <script src="./static/js/script.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm"></script>
     <script src="https://cdn.jsdelivr.net/npm/idb@6.1.5/build/iife/with-async-ittr-min.js"></script>
+    <script src="https://cdn.jsdelivr.net/pako/1.0.3/pako.min.js"></script>
     <!-- <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script> -->
     <!-- <script src="./static/js/localforage.js"></script> -->
 </head>
@@ -73,6 +74,9 @@ SELECT 1 AS "Result"
                 <div class="inner two"></div>
                 <div class="inner three"></div>
             </div> -->
+            <!-- <select id="select_fields" style="width: 120px;"></select>
+            <input id="txt_field_value">
+            <button onclick="change_table()">Change</button> -->
             <section id="files_section">
                 <div class="tab">
                     <button class="tablinks" onclick="showTable(event, 't_files')">Files</button>
@@ -178,12 +182,12 @@ SELECT 1 AS "Result"
     var client_id;
     var internal_tables = [], event_logs = [], parquet_buffer = {}, selected_source = {};
     var ctidx; // current table index
-    var f_storage, f_db, f_funcs, i_db;
-    var f_timerid;
+    var qtname; // queried table name
+    var f_storage, f_db, f_funcs, i_db, fb_conn;
     var bqtoken;
     var edit_start_time;
     var grid_active_rowIndex = -1, grid_active_columnIndex = -1;
-    var clients = {};
+    var clients = {}, sharedData = {}, pending_tables = {};
   
     DUCKDB_BUNDLES = ({
         asyncDefault: {
@@ -237,7 +241,7 @@ SELECT 1 AS "Result"
             f_db = firedb.getDatabase(firebaseApp);
             f_funcs = fireFuncs.getFunctions(firebaseApp);
             const dbRef = firedb.ref(f_db);
-            const snapshot = await firedb.get(firedb.child(dbRef, 'duckdb'));
+            let snapshot = await firedb.get(firedb.child(dbRef, 'duckdb')), tables;
 
             if (snapshot.exists()) {
                 data = snapshot.val()
@@ -256,9 +260,33 @@ SELECT 1 AS "Result"
             }
             refresh_tables();
 
-            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/update'), eventUpdateHandler);
-            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/cell'), eventCellHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/editcell'), eventEditCellHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/offline_update'), eventOfflineUpdateHandler);
+            firedb.onValue(firedb.ref(firedb.getDatabase(), 'events/cursor'), eventCursorHandler);
+            firedb.onValue(firedb.ref(f_db, ".info/connected"), processFirebaseConnection);
 
+            snapshot = await firedb.get(firedb.child(dbRef, 'events/cells'));
+            if (snapshot.exists()) {
+                tables = snapshot.val()
+                for (let t in tables) {
+                    initSharedData(t);
+                    for (let k in tables[t]) {
+                        for (let f in tables[t][k]) {
+                            if (sharedData[t] && sharedData[t][k] && sharedData[t][k][f]) {
+                                if (sharedData[t][k][f][1] < tables[t][k][f][1]) {
+                                    sharedData[t][k][f] = tables[t][k][f];
+                                }
+                            } else {
+                                if (!sharedData[t]) sharedData[t] = {};
+                                if (!sharedData[t][k]) sharedData[t][k] = {};
+                                sharedData[t][k][f] = tables[t][k][f];
+                            }
+                        }
+                    }
+                }
+            }
+
+            fb_conn = true;
             return;
         } catch (e) {
             console.log(e.message);
@@ -266,11 +294,62 @@ SELECT 1 AS "Result"
         setTimeout(init_firebase, 200);
     }
 
-    function eventCellHandler(ev) {
-        clients.cells = ev.val();
+    function processFirebaseConnection(ev) {
+        if (ev.val() === true) {
+            console.log("firebase -- connected --");
+            fb_conn = true;
+            for (tname in pending_tables) {
+                if (pending_tables[tname])
+                    uploadSharedData(tname);
+            }
+        } else {
+            console.log("firebase -- disconnected --");
+            fb_conn = false;
+        }
     }
 
-    function eventUpdateHandler(ev) {
+    function eventCursorHandler(ev) {
+        clients.cursors = ev.val();
+        canvasgrid.draw();
+    }
+
+    function eventOfflineUpdateHandler(ev) {
+        const updates = ev.val();
+        if (!updates) return;
+
+        if (updates[client_id] && Object.keys(sharedData).length == 0) {
+            sharedData = JSON.parse(pako.inflate(atob(updates[client_id]), { to: 'string' }));
+        }
+
+        for (let id in updates) {
+            if (id != client_id) {
+                let tables = JSON.parse(pako.inflate(atob(updates[id]), { to: 'string' }));
+                for (let t in tables) {
+                    let log = true;
+                    for (let k in tables[t]) {
+                        for (let f in tables[t][k]) {
+                            if (sharedData[t] && sharedData[t][k] && sharedData[t][k][f]) {
+                                if (sharedData[t][k][f][1] < tables[t][k][f][1]) {
+                                    if (log) {
+                                        console.log(Date.now() - tables[t][k][f][1]);
+                                        log = false;
+                                    }
+                                    sharedData[t][k][f] = tables[t][k][f];
+                                }
+                            } else {
+                                if (!sharedData[t]) sharedData[t] = {};
+                                if (!sharedData[t][k]) sharedData[t][k] = {};
+                                sharedData[t][k][f] = tables[t][k][f];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        update_canvasgrid();
+    }
+
+    function eventEditCellHandler(ev) {
         const data = ev.val();
         if (data.clientId != client_id) {
             if (ctidx && data.tableName == internal_tables[ctidx].table.name) {
@@ -282,6 +361,7 @@ SELECT 1 AS "Result"
                         break;
                     }
                 }
+                canvasgrid.draw();
             }
         }
     }
@@ -301,18 +381,49 @@ SELECT 1 AS "Result"
 
     function onEndEditTable(e) {
         if (e.oldValue != e.newValue && ctidx && internal_tables[ctidx].table.pk) {
-            let edit_end_time = Date.now();
-            firedb.set(firedb.ref(f_db, 'events/update'), {
+            const edit_end_time = Date.now(), tname = internal_tables[ctidx].table.name;
+            initSharedData(tname);
+            const fields = sharedData[tname]["fields"], pk_field = internal_tables[ctidx].table.pk, pk_value = e.cell.data[pk_field];
+            if (!sharedData[tname][pk_value]) sharedData[tname][pk_value] = {};
+            sharedData[tname][pk_value][fields[e.cell.header.name]] = [e.newValue, edit_end_time];
+
+            const ret = sendDataToFirebase('events/editcell', {
                 clientId: client_id,
-                tableName: internal_tables[ctidx].table.name,
+                tableName: tname,
                 row: e.cell.data,
                 field: e.cell.header.name,
                 newValue: e.newValue,
                 edit_start_time: edit_start_time,
                 edit_end_time: edit_end_time
             });
+
+            if (ret) {
+                sendDataToFirebase('events/cells/'+tname+'/'+pk_value+'/'+fields[e.cell.header.name], sharedData[tname][pk_value][fields[e.cell.header.name]]);
+            } else {
+                pending_tables[tname] = true;
+            }
+            
             save_event_logs(EVENT_TYPE_TABLE, `Changed table "${internal_tables[ctidx].table.name}"`, edit_start_time, edit_end_time);
         }
+    }
+
+    function onAfterPaste(e) {
+        if (!ctidx) return;
+        
+        const tname = internal_tables[ctidx].table.name;
+        initSharedData(tname);
+
+        const fields = sharedData[tname]["fields"], pk_field = internal_tables[ctidx].table.pk;
+        const schema = canvasgrid.schema;
+        let pk_value, f;
+        for (c of e.cells) {
+            row = canvasgrid.data[c[0]];
+            pk_value = row[pk_field];
+            if (!sharedData[tname][pk_value]) sharedData[tname][pk_value] = {};
+            f = schema[c[1]].name;
+            sharedData[tname][pk_value][fields[f]] = [row[f], Date.now()];
+        }
+        uploadSharedData(tname);
     }
 
     function getBQToken() {
@@ -320,6 +431,7 @@ SELECT 1 AS "Result"
         .then(res => res.json())
         .then(data => {bqtoken = data.Authorization;})
     }
+
     async function load() {
         setTimeout(init_firebase, 200);
         
@@ -434,12 +546,13 @@ SELECT 1 AS "Result"
         canvasgrid.style.width = '100%';
         canvasgrid.addEventListener('beforebeginedit', onBeginEditTable);
         canvasgrid.addEventListener('beforeendedit', onEndEditTable);
+        canvasgrid.addEventListener('afterpaste', onAfterPaste);
         canvasgrid.addEventListener('rendercell', onRenderCell);
         canvasgrid.addEventListener('click', onClickGrid);
     };
 
     window.onbeforeunload = function (event) {
-        firedb.set(firedb.ref(f_db, 'events/cell/'+ client_id), null);
+        sendDataToFirebase('events/cursor/'+ client_id, null);
 
         // var message = 'Important: Please click on \'Save\' button to leave this page.';
         // if (typeof event == 'undefined') {
@@ -456,7 +569,7 @@ SELECT 1 AS "Result"
             if (e.cell.rowIndex != grid_active_rowIndex || e.cell.columnIndex != grid_active_columnIndex) {
                 grid_active_rowIndex = e.cell.rowIndex;
                 grid_active_columnIndex = e.cell.columnIndex;
-                firedb.set(firedb.ref(f_db, 'events/cell/'+client_id), {
+                sendDataToFirebase('events/cursor/'+client_id, {
                     tableIndex: ctidx,
                     rowIndex: grid_active_rowIndex,
                     columnIndex: grid_active_columnIndex
@@ -466,10 +579,10 @@ SELECT 1 AS "Result"
     }
 
     function onRenderCell(e) {
-        if (ctidx && clients.cells) {
+        if (ctidx && clients.cursors) {
             let i = 0;
-            for (let k in clients.cells) {
-                if (k != client_id && clients.cells[k].tableIndex == ctidx && e.cell.rowIndex == clients.cells[k].rowIndex && e.cell.columnIndex == clients.cells[k].columnIndex) {
+            for (let k in clients.cursors) {
+                if (k != client_id && clients.cursors[k].tableIndex == ctidx && e.cell.rowIndex == clients.cursors[k].rowIndex && e.cell.columnIndex == clients.cursors[k].columnIndex) {
                     e.ctx.fillStyle = CELL_COLORS[i % CELL_COLORS.length];
                 }
                 i++;
@@ -506,6 +619,7 @@ SELECT 1 AS "Result"
             for(let i=0; i<duck_dbs.length; i++) {
                 duck_dbs[i].instance.registerFileHandle(this.files[0].name, this.files[0]);
             }
+            qtname = null;
             const preview_start_time = Date.now();
             const query = `SELECT * FROM '${this.files[0].name}' LIMIT 100`;
             const preview = await run_query(query, true);
@@ -540,7 +654,7 @@ SELECT 1 AS "Result"
                         internal_tables[i].table.localtable = internal_tables[i].table.name;
                         save_event_logs(EVENT_TYPE_TABLE, `Created new local table (${table_name}) from "${file_name}"`, create_table_start_time, Date.now(), query);
                         refresh_tables();
-                        firedb.set(firedb.ref(f_db, 'duckdb/'+internal_tables[i].file.hash), internal_tables[i]);
+                        sendDataToFirebase('duckdb/'+internal_tables[i].file.hash, internal_tables[i]);
 
                         // export_parquet(duck_dbs[0].instance, internal_tables[i]);
                     } else {
@@ -580,25 +694,35 @@ SELECT 1 AS "Result"
         });
     }
     function onClickPreview() {
-        const id = this.parentNode.parentNode.id;
-        if (selected_source[internal_tables[id].file.hash] == "Remote BQTable") {
-            run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[id].bqtable.name}\` LIMIT 100`, true);    
+        ctidx = this.parentNode.parentNode.id;
+        qtname = internal_tables[ctidx].table.name;
+        if (selected_source[internal_tables[ctidx].file.hash] == "Remote BQTable") {
+            run_bquery(`SELECT * FROM \`${projectId}.${tableId}.${internal_tables[ctidx].bqtable.name}\` LIMIT 100`, true);    
         } else {
             let query;
-            switch (selected_source[internal_tables[id].file.hash]) {
-                case "Local Table": query = `SELECT * FROM '${internal_tables[id].table.localtable}' LIMIT 100`; break;
-                case "Local File": query = `SELECT * FROM '${internal_tables[id].file.name}' LIMIT 100`; break;
-                case "Local Parquet": query = `SELECT * FROM '${internal_tables[id].parquet.name}' LIMIT 100`; break;
-                case "Remote Parquet": query = `SELECT * FROM '${internal_tables[id].parquet.remote}' LIMIT 100`; break;
+            switch (selected_source[internal_tables[ctidx].file.hash]) {
+                case "Local Table": query = `SELECT * FROM '${internal_tables[ctidx].table.localtable}' LIMIT 100`; break;
+                case "Local File": query = `SELECT * FROM '${internal_tables[ctidx].file.name}' LIMIT 100`; break;
+                case "Local Parquet": query = `SELECT * FROM '${internal_tables[ctidx].parquet.name}' LIMIT 100`; break;
+                case "Remote Parquet": query = `SELECT * FROM '${internal_tables[ctidx].parquet.remote}' LIMIT 100`; break;
             }
             if (query) run_query(query, true);
         }
-        ctidx = id;
+        /*var select = document.getElementById("select_fields");
+        while (select.hasChildNodes()) {
+            select.removeChild(select.lastChild);
+        }
+        for (f of internal_tables[ctidx].table.fields) {
+            if (f != internal_tables[ctidx].table.pk) {
+                option = addCell(select, "option", f);
+            }
+        }*/
+        refresh_tables(TID_FILES);
     }
     function onClickRemove() {
         const id = this.parentNode.parentNode.id;
         const start_time = Date.now();
-        firedb.set(firedb.ref(f_db, 'duckdb/'+ internal_tables[id].file.hash), null);
+        sendDataToFirebase('duckdb/'+ internal_tables[id].file.hash, null);
         save_event_logs(EVENT_TYPE_FILE, `Removed "${internal_tables[id].file.name}"`, start_time);
         internal_tables.splice(id, 1);
         refresh_tables();
@@ -640,7 +764,7 @@ SELECT 1 AS "Result"
                     if (res === undefined) {
                         save_event_logs(EVENT_TYPE_FILE, `Remove Remote Parquet "${internal_tables[tid].parquet.remote}"`, start_time);
                         internal_tables[tid].parquet.remote = "";
-                        firedb.set(firedb.ref(f_db, 'duckdb/'+ internal_tables[tid].file.hash), internal_tables[tid]);
+                        sendDataToFirebase('duckdb/'+ internal_tables[tid].file.hash, internal_tables[tid]);
                     }
                     break;
                 case "RT":
@@ -648,7 +772,7 @@ SELECT 1 AS "Result"
                     const result = await bqdaemon({command: "RemoveTable", tableId: internal_tables[tid].bqtable.name});
                     save_event_logs(EVENT_TYPE_FILE, `Remove Remote Parquet "${internal_tables[tid].bqtable.name}"`, start_time);
                     internal_tables[tid].bqtable.name = "";
-                    firedb.set(firedb.ref(f_db, 'duckdb/'+ internal_tables[tid].file.hash), internal_tables[tid]);
+                    sendDataToFirebase('duckdb/'+ internal_tables[tid].file.hash, internal_tables[tid]);
                     break;
             }
             refresh_tables(TID_FILES);
@@ -757,7 +881,7 @@ SELECT 1 AS "Result"
                 query: query,
                 client_id: client_id
             };
-            firedb.set(firedb.ref(f_db, 'logs/'+event_hash), event);
+            sendDataToFirebase('logs/'+event_hash, event);
             event.hash = event_hash
         } else {
             event = {
@@ -830,7 +954,7 @@ SELECT 1 AS "Result"
         const td = this.parentNode.parentNode;
         const tid = td.id.charAt(td.id.length-1);
         internal_tables[tid].table.pk = internal_tables[tid].table.new_pk;
-        firedb.set(firedb.ref(f_db, 'duckdb/'+internal_tables[tid].file.hash), internal_tables[tid]);
+        sendDataToFirebase('duckdb/'+internal_tables[tid].file.hash, internal_tables[tid]);
         td.removeChild(this.parentNode);
     }
 
@@ -870,6 +994,8 @@ SELECT 1 AS "Result"
     }
 
     function refresh_tables(tid = TID_ALL) {
+        if (!ctidx && internal_tables.length > 0)
+            ctidx = 0;
         if (tid == TID_ALL || tid == TID_FILES) {
             var tbody = document.getElementById(`${TID_FILES}_tbody`);
             while (tbody.hasChildNodes()) {
@@ -939,6 +1065,8 @@ SELECT 1 AS "Result"
                 if (td)
                     tr.appendChild(td);
                 tr.id = k;
+                if (k == ctidx) tr.classList.add('selected');
+                // tr.onclick = onClickTable;
                 tbody.appendChild(tr);
             }
             Sortable.initTable(document.getElementById(TID_FILES));
@@ -988,8 +1116,16 @@ SELECT 1 AS "Result"
         }
     }
 
+    function onClickTable(e) {
+        if (e.target.localName == 'td' && ctidx != e.currentTarget.id) {
+            ctidx = parseInt(e.currentTarget.id);
+            refresh_tables(TID_FILES);
+        }
+    }
+
     function onClickPlay() {
         cancel_query = false;
+        qtname = null;
 
         let selected = sql_editer.getSelection();
         if (selected) {
@@ -1140,7 +1276,7 @@ SELECT 1 AS "Result"
             data.table.gcs_elapsed = ((Date.now() - start_time) / 1000).toFixed(2);
             save_event_logs(EVENT_TYPE_FILE, `Uploaded "${data.parquet.name}" to remote parquet "${data.parquet.remote}"`, start_time);
             refresh_tables();
-            firedb.set(firedb.ref(f_db, 'duckdb/'+data.file.hash), data);
+            sendDataToFirebase('duckdb/'+data.file.hash, data);
             setTimeout(check_bqtable, 2000, data);
         })
         .catch((error) => {
@@ -1166,7 +1302,7 @@ SELECT 1 AS "Result"
                 
                 parquet_buffer[data.parquet.name] = await db.copyFileToBuffer(`/tmp/${data.parquet.name}`);
                 
-                firedb.set(firedb.ref(f_db, 'duckdb/'+data.file.hash), data);
+                sendDataToFirebase('duckdb/'+data.file.hash, data);
                 
                 const tx = i_db.transaction('parquets', 'readwrite');
                 const store = tx.objectStore('parquets');
@@ -1252,9 +1388,13 @@ SELECT 1 AS "Result"
             first_result = true
             while(batch.length > 0 && !cancel_query) {
                 for (let row of batch) {
-                    let r = {}
+                    let r = {}, pk_value = row[internal_tables[ctidx].table.pk];
                     for (let f of field_names) {
                         r[f] = row[f];
+                        if (qtname && sharedData[qtname]) {
+                            if (sharedData[qtname][pk_value] && sharedData[qtname][pk_value][sharedData[qtname]["fields"][f]])
+                                r[f] = sharedData[qtname][pk_value][sharedData[qtname]["fields"][f]][0];
+                        }
                     }
                     data.push(r)
                 }
@@ -1349,6 +1489,7 @@ SELECT 1 AS "Result"
                 }
                 canvasgrid.data = data;
                 save_event_logs(EVENT_TYPE_QUERY, `Run bquery`, start_time, end_time, query);
+                update_canvasgrid();
             }
         } catch (e) {
             qstatus.innerHTML = `<span class="error_code">${e.message}</span>`;
@@ -1364,6 +1505,94 @@ SELECT 1 AS "Result"
 
         await handleDirectoryEntry( dirHandle, out );
         console.log( out );
+    }
+
+    function update_canvasgrid() {
+        if (ctidx && sharedData[internal_tables[ctidx].table.name]) {
+            const tname = internal_tables[ctidx].table.name, pk_field = internal_tables[ctidx].table.pk;
+            for (let i=0; i<canvasgrid.data.length; i++) {
+                let pk_value = canvasgrid.data[i][pk_field];
+                for (let f in canvasgrid.data[i]) {
+                    if (tname && sharedData[tname]) {
+                        if (sharedData[tname][pk_value] && sharedData[tname][pk_value][sharedData[tname]["fields"][f]])
+                            canvasgrid.data[i][f] = sharedData[tname][pk_value][sharedData[tname]["fields"][f]][0];
+                    }
+                }
+            }
+            canvasgrid.draw();
+        }
+    }
+
+    function initSharedData(tablename) {
+        if (!sharedData[tablename]) sharedData[tablename] = {};
+        if (!sharedData[tablename]["fields"]) {
+            sharedData[tablename]["fields"] = {}
+            for (let t of internal_tables) {
+                if (t.table.name == tablename) {
+                    for (let i=0; i<t.table.fields.length; i++)
+                        sharedData[tablename]["fields"][t.table.fields[i]] = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    async function change_table() {
+        if (ctidx) {
+            document.getElementById("loader").classList.add("show_block");
+
+            const select_field = document.getElementById("select_fields").value;
+            const field_value = document.getElementById("txt_field_value").value;
+
+            const conn = await duck_dbs[0].instance.connect();
+            const query = `SELECT * FROM \"${internal_tables[ctidx].parquet.name}\"`;
+            const result = await conn.send(query);
+
+            let batch = (await result.next()).value;
+            const field_names = []
+            for (let field of batch.schema.fields) {
+                field_names.push(field.name)
+            }
+
+            const data = [];
+            const tname = internal_tables[ctidx].table.name;
+            
+            initSharedData(tname);
+            
+            const fields = sharedData[tname]["fields"], pk_field = internal_tables[ctidx].table.pk;
+            while (batch.length > 0) {
+                for (let row of batch) {
+                    let r = {};
+                    for (let f of field_names) {
+                        if (f == select_field) {
+                            r[f] = field_value;
+                        } else {
+                            r[f] = row[f];
+                        }
+                    }
+                    data.push(r);
+                    let pk_value = r[pk_field];
+                    if (!sharedData[tname][pk_value]) sharedData[tname][pk_value] = {};
+                    sharedData[tname][pk_value][fields[select_field]] = [field_value, Date.now()];
+                }
+                batch = (await result.next()).value;
+                if (!batch) break;
+            }
+            await conn.close();
+            canvasgrid.data = data;
+            document.getElementById("loader").classList.remove("show_block");
+            uploadSharedData(tname);
+        }
+    }
+
+    async function uploadSharedData(tname) {
+        if (navigator.onLine) {
+            const data = btoa(pako.deflate(JSON.stringify(sharedData), { to: 'string' }));
+            sendDataToFirebase(`events/offline_update/`+client_id, data);
+            pending_tables[tname] = false;
+        } else {
+            pending_tables[tname] = true;
+        }
     }
 
     // A function is used for dragging and moving
@@ -1413,8 +1642,5 @@ SELECT 1 AS "Result"
         }
     }
     dragElement( document.getElementById("separator"), "H" );
-
-    window.addEventListener('offline', function(e) { console.log('offline'); });
-    window.addEventListener('online', function(e) { console.log('online'); });
 </script>
 </html>

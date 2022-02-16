@@ -155,3 +155,11 @@ function formatFileSize(size) {
     if (format_size < 1024) return Math.round(format_size) + 'MB';
     return (format_size / 1024).toFixed(1) + 'GB';
 }
+
+function sendDataToFirebase(url, data) {
+    if (navigator.onLine && fb_conn) {
+        firedb.set(firedb.ref(f_db, url), data);
+        return true;
+    }
+    return false;
+}
